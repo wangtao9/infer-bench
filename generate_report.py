@@ -514,16 +514,15 @@ def generate_markdown_report(
     lines.append("## 1. 单请求延迟\n")
     single = df[df["test_type"] == "single"] if not df.empty else pd.DataFrame()
     if not single.empty:
-        table = (
-            single.groupby(["engine", "prompt_tokens"])
-            .agg(
-                ttft_ms=("ttft_ms", "mean"),
-                tps=("mean_tps", "mean"),
+        lines.append("| 引擎 | 输入长度 (tokens) | TTFT (ms) | TPS (tokens/s) |")
+        lines.append("|------|-------------------|-----------|----------------|")
+        for _, row in single.sort_values(["engine", "prompt_tokens"]).iterrows():
+            lines.append(
+                f"| {ENGINE_LABELS.get(row['engine'], row['engine'])} "
+                f"| {int(row['prompt_tokens'])} "
+                f"| {row['ttft_ms']:.2f} "
+                f"| {row['mean_tps']:.2f} |"
             )
-            .reset_index()
-        )
-        table["engine"] = table["engine"].map(ENGINE_LABELS)
-        lines.append(table.to_markdown(index=False, floatfmt=".2f"))
         lines.append("")
     else:
         lines.append("*无单请求数据*\n")
@@ -537,17 +536,16 @@ def generate_markdown_report(
     lines.append("## 2. 并发吞吐\n")
     concurrent = df[df["test_type"] == "concurrent"] if not df.empty else pd.DataFrame()
     if not concurrent.empty:
-        table = (
-            concurrent.groupby(["engine", "batch_size"])
-            .agg(
-                ttft_ms=("ttft_ms", "mean"),
-                tps=("mean_tps", "mean"),
-                vram_mb=("peak_vram_mb", "mean"),
+        lines.append("| 引擎 | 并发数 | TTFT (ms) | TPS (tokens/s) | 峰值显存 (MB) |")
+        lines.append("|------|--------|-----------|----------------|---------------|")
+        for _, row in concurrent.sort_values(["engine", "batch_size"]).iterrows():
+            lines.append(
+                f"| {ENGINE_LABELS.get(row['engine'], row['engine'])} "
+                f"| {int(row['batch_size'])} "
+                f"| {row['ttft_ms']:.2f} "
+                f"| {row['mean_tps']:.2f} "
+                f"| {row['peak_vram_mb']:.0f} |"
             )
-            .reset_index()
-        )
-        table["engine"] = table["engine"].map(ENGINE_LABELS)
-        lines.append(table.to_markdown(index=False, floatfmt=".2f"))
         lines.append("")
     else:
         lines.append("*无并发数据*\n")
@@ -561,17 +559,16 @@ def generate_markdown_report(
     lines.append("## 3. 渐进并发扫描\n")
     sweep = df[df["test_type"] == "sweep"] if not df.empty else pd.DataFrame()
     if not sweep.empty:
-        table = (
-            sweep.groupby(["engine", "batch_size"])
-            .agg(
-                ttft_ms=("ttft_ms", "mean"),
-                tps=("mean_tps", "mean"),
-                vram_mb=("peak_vram_mb", "mean"),
+        lines.append("| 引擎 | 并发数 | TTFT (ms) | TPS (tokens/s) | 峰值显存 (MB) |")
+        lines.append("|------|--------|-----------|----------------|---------------|")
+        for _, row in sweep.sort_values(["engine", "batch_size"]).iterrows():
+            lines.append(
+                f"| {ENGINE_LABELS.get(row['engine'], row['engine'])} "
+                f"| {int(row['batch_size'])} "
+                f"| {row['ttft_ms']:.2f} "
+                f"| {row['mean_tps']:.2f} "
+                f"| {row['peak_vram_mb']:.0f} |"
             )
-            .reset_index()
-        )
-        table["engine"] = table["engine"].map(ENGINE_LABELS)
-        lines.append(table.to_markdown(index=False, floatfmt=".2f"))
         lines.append("")
     else:
         lines.append("*无扫描数据*\n")
