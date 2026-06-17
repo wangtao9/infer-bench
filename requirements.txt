@@ -1,0 +1,11 @@
+vllm
+sglang[all]
+torch
+transformers
+accelerate
+pynvml
+aiohttp
+pyyaml
+matplotlib
+seaborn
+pandas

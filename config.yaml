@@ -1,0 +1,44 @@
+model:
+  name: "Qwen/Qwen2.5-7B-Instruct"
+  path: null  # 本地路径，null 则从 HuggingFace 下载
+
+gpu:
+  device: "0"
+  monitor_interval_ms: 100
+
+test:
+  single_request:
+    prompt_lengths: [128, 512, 1024]
+    max_new_tokens: 256
+    num_warmup: 3
+    num_runs: 5
+
+  concurrent:
+    batch_sizes: [1, 2, 4, 8, 16]
+    prompt_length: 512
+    max_new_tokens: 256
+    num_warmup: 2
+    num_runs: 3
+
+  sweep:
+    start: 1
+    stop: 32
+    multiplier: 2  # 1, 2, 4, 8, 16, 32
+    prompt_length: 512
+    max_new_tokens: 256
+
+engines:
+  vllm:
+    port: 8000
+    extra_args: "--gpu-memory-utilization 0.9"
+  sglang:
+    port: 8001
+    extra_args: "--mem-fraction-static 0.9"
+  transformers:
+    dtype: "float16"
+    device_map: "auto"
+
+output:
+  results_dir: "results"
+  reports_dir: "reports"
+  timestamp_format: "%Y%m%d_%H%M%S"
