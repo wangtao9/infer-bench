@@ -42,6 +42,7 @@ infer-bench/
 │   ├── config.py            # 配置加载（yaml → dataclass）
 │   ├── metrics.py           # 指标采集工具（TTFT/TPS 计算）
 │   ├── client.py            # OpenAI-compatible API 客户端（vLLM/SGLang 共用）
+│   ├── prompts.py           # 种子 prompt 定义 + 长度扩展 + tokenize 截断
 │   └── gpu.py               # GPU 显存监控（pynvml 后台线程）
 ├── results/                 # 测试结果输出目录（CSV）
 │   └── .gitkeep
@@ -121,6 +122,48 @@ output:
 - `common/gpu.py` 使用 `pynvml` 每 100ms 采样 GPU 已用显存
 - 测试前记录基线值，测试期间后台线程持续采样
 - 测试结束后报告峰值增量（peak − baseline）
+
+## Prompt 生成策略
+
+采用**种子对话 + 上下文扩展**方案，确保不同长度 prompt 的变量唯一（只有长度），且语义连贯、KV cache 访问模式接近真实多轮对话。
+
+### 种子 Prompt 设计
+
+预设 3 个高质量种子 prompt，覆盖典型场景：
+
+| 种子 | 场景 | 内容 |
+|------|------|------|
+| seed_qa | 多轮问答 | 一个关于技术概念的问答对话（如解释注意力机制） |
+| seed_summary | 文档摘要 | 一段长文本要求模型生成摘要 |
+| seed_code | 代码生成 | 给出需求描述，要求生成代码 |
+
+### 长度扩展机制
+
+1. 用模型 tokenizer 对种子 prompt 进行 tokenize，获取 token 数
+2. 短 prompt（~128 tokens）：直接使用种子 prompt，可能需截断到目标长度
+3. 中 prompt（~512 tokens）：在种子 prompt 前追加 N 轮历史对话（预设好的多轮 QA）
+4. 长 prompt（~1024 tokens）：追加更多轮历史对话
+
+关键约束：
+- **所有长度使用同一组种子内容**，只是历史轮次不同 → 控制变量
+- 扩展内容是一段完整的多轮对话历史，不是随机填充 → KV cache 访问模式真实
+- 使用模型的 tokenizer 精确 tokenize 后截断到目标 token 数 → 长度准确
+- 种子 prompt 内容硬编码在 `common/prompts.py`，不依赖外部数据集
+
+### 并发场景的 Prompt 池
+
+并发测试中，每个并发请求使用同一模板但不同 seed（如不同问题）生成的 prompt，避免 KV cache 完全命中带来的不公平优化。具体做法：为每个并发请求分配不同的 history seed index，从预设的多个变体中选取。
+
+### 新增文件
+
+```
+common/
+├── prompts.py    # 种子 prompt 定义 + 长度扩展 + tokenize 截断
+```
+
+`common/prompts.py` 提供：
+- `generate_prompt(target_tokens: int, seed: str = "seed_qa") -> str`：生成指定 token 数的 prompt
+- `generate_batch_prompts(batch_size: int, target_tokens: int) -> list[str]`：生成一批不同内容但相同长度的 prompt
 
 ## 测试场景
 
