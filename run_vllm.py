@@ -260,7 +260,9 @@ async def run_concurrent_tests(
             batch_size,
             avg_ttft,
             avg_tps,
-            peak_vram, peak_vram_abs,
+            kv_usage * 100 if kv_usage >= 0 else -1,
+            num_running,
+            num_waiting,
         )
 
     return results
