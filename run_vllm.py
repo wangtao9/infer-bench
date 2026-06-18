@@ -30,7 +30,11 @@ logger = logging.getLogger("run_vllm")
 
 
 def start_vllm_server(cfg) -> subprocess.Popen:
-    """启动 vLLM 服务器，返回 Popen 对象。"""
+    """启动 vLLM 服务器，返回 Popen 对象。
+
+    使用 start_new_session=True 将服务器进程放入独立进程组，
+    以便 stop_vllm_server 能 kill 整个进程树。
+    """
     model = cfg.model.path or cfg.model.name
     port = cfg.engines.vllm.port
     extra_args = cfg.engines.vllm.extra_args
@@ -52,19 +56,37 @@ def start_vllm_server(cfg) -> subprocess.Popen:
         env=env,
         stdout=sys.stdout,
         stderr=sys.stderr,
+        start_new_session=True,  # 新进程组，方便 kill 整个进程树
     )
     return proc
 
 
 def stop_vllm_server(proc: subprocess.Popen) -> None:
-    """停止 vLLM 服务器进程。"""
+    """停止 vLLM 服务器进程及其所有子进程。
+
+    vLLM 通过 shell=True 启动，proc.terminate() 只会终止 shell 进程，
+    不会传递给 vLLM 子进程。使用 os.killpg() kill 整个进程组。
+    """
+    import signal
+
     logger.info("Stopping vLLM server (PID %d)...", proc.pid)
     try:
+        # kill 整个进程组（shell + vLLM 子进程）
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    except ProcessLookupError:
+        pass  # 进程已退出
+    except PermissionError:
+        logger.warning("Permission denied when killing vLLM process group, falling back to terminate")
         proc.terminate()
-        proc.wait(timeout=10)
+
+    try:
+        proc.wait(timeout=15)
     except subprocess.TimeoutExpired:
-        logger.warning("vLLM server did not terminate, killing...")
-        proc.kill()
+        logger.warning("vLLM server did not terminate in 15s, force killing...")
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            proc.kill()
         proc.wait(timeout=5)
     logger.info("vLLM server stopped.")
 

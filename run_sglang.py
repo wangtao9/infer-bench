@@ -52,19 +52,32 @@ def start_sglang_server(cfg) -> subprocess.Popen:
         env=env,
         stdout=sys.stdout,
         stderr=sys.stderr,
+        start_new_session=True,  # 新进程组，方便 kill 整个进程树
     )
     return proc
 
 
 def stop_sglang_server(proc: subprocess.Popen) -> None:
-    """停止 SGLang 服务器进程。"""
+    """停止 SGLang 服务器进程及其所有子进程。"""
+    import signal
+
     logger.info("Stopping SGLang server (PID %d)...", proc.pid)
     try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    except PermissionError:
+        logger.warning("Permission denied when killing SGLang process group, falling back to terminate")
         proc.terminate()
-        proc.wait(timeout=10)
+
+    try:
+        proc.wait(timeout=15)
     except subprocess.TimeoutExpired:
-        logger.warning("SGLang server did not terminate, killing...")
-        proc.kill()
+        logger.warning("SGLang server did not terminate in 15s, force killing...")
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            proc.kill()
         proc.wait(timeout=5)
     logger.info("SGLang server stopped.")
 
