@@ -152,6 +152,13 @@ async def sweep_http_engine(engine: str, cfg, run_id: str) -> list[BenchmarkResu
     port = cfg.engines.vllm.port if engine == "vllm" else cfg.engines.sglang.port
     base_url = f"http://localhost:{port}"
 
+    # Start GPU monitor before server — baseline = idle GPU memory.
+    gpu_monitor = GPUMonitor(
+        device_index=int(cfg.gpu.device.split(",")[0]),
+        interval_ms=cfg.gpu.monitor_interval_ms,
+    )
+    gpu_monitor.start(reset_baseline=True)
+
     results = []
     proc = start_server(engine, cfg)
 
@@ -169,12 +176,6 @@ async def sweep_http_engine(engine: str, cfg, run_id: str) -> list[BenchmarkResu
         # Load tokenizer
         logger.info("Loading tokenizer: %s", model)
         tokenizer = AutoTokenizer.from_pretrained(model, trust_remote_code=True)
-
-        # GPU monitor
-        gpu_monitor = GPUMonitor(
-            device_index=int(cfg.gpu.device.split(",")[0]),
-            interval_ms=cfg.gpu.monitor_interval_ms,
-        )
 
         # Sweep concurrency levels
         concurrency_levels = generate_sweep_concurrency(sw_cfg.start, sw_cfg.stop, sw_cfg.multiplier)
@@ -194,7 +195,7 @@ async def sweep_http_engine(engine: str, cfg, run_id: str) -> list[BenchmarkResu
                     batch_size, sw_cfg.prompt_length, tokenizer=tokenizer
                 )
 
-                gpu_monitor.start()
+                gpu_monitor.start(reset_baseline=False)
                 res = await concurrent_stream_requests(
                     base_url, prompts, model, max_tokens=sw_cfg.max_new_tokens
                 )
@@ -273,7 +274,14 @@ def sweep_transformers(cfg, run_id: str) -> list[BenchmarkResult]:
     model_name = cfg.model.path or cfg.model.name
     sw_cfg = cfg.test.sweep
 
-    # Load model
+    # Start GPU monitor BEFORE loading model — baseline = idle GPU memory.
+    gpu_monitor = GPUMonitor(
+        device_index=int(cfg.gpu.device.split(",")[0]),
+        interval_ms=cfg.gpu.monitor_interval_ms,
+    )
+    gpu_monitor.start(reset_baseline=True)
+
+    # Load model (this allocates most GPU memory)
     dtype_str = cfg.engines.transformers.dtype
     device_map = cfg.engines.transformers.device_map
     torch_dtype = DTYPE_MAP.get(dtype_str)
@@ -293,11 +301,8 @@ def sweep_transformers(cfg, run_id: str) -> list[BenchmarkResult]:
     model.eval()
     logger.info("Model loaded successfully.")
 
-    # GPU monitor
-    gpu_monitor = GPUMonitor(
-        device_index=int(cfg.gpu.device.split(",")[0]),
-        interval_ms=cfg.gpu.monitor_interval_ms,
-    )
+    # Stop initial sampling; baseline is now locked.
+    gpu_monitor.stop()
 
     # Sweep concurrency levels
     concurrency_levels = generate_sweep_concurrency(sw_cfg.start, sw_cfg.stop, sw_cfg.multiplier)
@@ -321,7 +326,7 @@ def sweep_transformers(cfg, run_id: str) -> list[BenchmarkResult]:
                 prompts, return_tensors="pt", padding=True, truncation=True,
             ).to(model.device)
 
-            gpu_monitor.start()
+            gpu_monitor.start(reset_baseline=False)
             start_time = time.monotonic()
 
             with torch.no_grad():

@@ -227,7 +227,7 @@ def run_single_request_tests(model, tokenizer, cfg, run_id, gpu_monitor):
         # Benchmark runs
         ttfts = []
         tps_list = []
-        gpu_monitor.start()
+        gpu_monitor.start(reset_baseline=False)
 
         for _ in range(sr_cfg.num_runs):
             res = single_generate(model, tokenizer, prompt, sr_cfg.max_new_tokens)
@@ -309,7 +309,7 @@ def run_concurrent_tests(model, tokenizer, cfg, run_id, gpu_monitor):
         # Benchmark runs
         ttfts = []
         tps_list = []
-        gpu_monitor.start()
+        gpu_monitor.start(reset_baseline=False)
 
         for _ in range(cc_cfg.num_runs):
             res = batch_generate(model, tokenizer, prompts, cc_cfg.max_new_tokens)
@@ -371,14 +371,18 @@ def main():
 
     logger.info("=== Transformers Benchmark === run_id=%s model=%s", run_id, model_name)
 
-    # Load model and tokenizer
-    model, tokenizer = load_model_and_tokenizer(cfg)
-
-    # Initialize GPU monitor
+    # Start GPU monitor BEFORE loading model — baseline = idle GPU memory.
     gpu_monitor = GPUMonitor(
         device_index=int(cfg.gpu.device.split(",")[0]),
         interval_ms=cfg.gpu.monitor_interval_ms,
     )
+    gpu_monitor.start(reset_baseline=True)
+
+    # Load model and tokenizer (this is where most GPU memory is allocated)
+    model, tokenizer = load_model_and_tokenizer(cfg)
+
+    # Stop the initial sampling; baseline is now locked.
+    gpu_monitor.stop()
 
     # Run tests
     all_results = []

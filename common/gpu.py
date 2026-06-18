@@ -52,10 +52,17 @@ class GPUMonitor:
                 logger.warning("GPU sample failed: %s", e)
             self._stop_event.wait(self._interval_s)
 
-    def start(self):
-        """启动后台显存采样。记录基线值并开始采集。"""
+    def start(self, reset_baseline: bool = True):
+        """启动后台显存采样。
+
+        Args:
+            reset_baseline: 是否重新记录基线值。设为 False 可保留之前
+                的基线（例如在模型加载前 start 并锁住基线，之后
+                反复 start/stop 采样时不再覆盖基线）。
+        """
         self._samples = []
-        self._baseline_mb = self._read_vram_mb()
+        if reset_baseline:
+            self._baseline_mb = self._read_vram_mb()
         self._stop_event.clear()
         self._running = True
         self._thread = threading.Thread(target=self._sampling_loop, daemon=True)

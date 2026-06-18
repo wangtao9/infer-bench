@@ -35,8 +35,7 @@ def start_vllm_server(cfg) -> subprocess.Popen:
     extra_args = cfg.engines.vllm.extra_args
 
     cmd = (
-        f"python -m vllm.entrypoints.openai.api_server "
-        f"--model {model} "
+        f"vllm serve {model} "
         f"--port {port} "
         f"--dtype auto "
         f"{extra_args}"
@@ -103,7 +102,7 @@ async def run_single_request_tests(
         # Benchmark runs
         ttfts = []
         tps_list = []
-        gpu_monitor.start()
+        gpu_monitor.start(reset_baseline=False)
 
         for _ in range(sr_cfg.num_runs):
             res = await stream_request(
@@ -180,7 +179,7 @@ async def run_concurrent_tests(
         # Benchmark runs
         ttfts = []
         tps_list = []
-        gpu_monitor.start()
+        gpu_monitor.start(reset_baseline=False)
 
         for _ in range(cc_cfg.num_runs):
             res = await concurrent_stream_requests(
@@ -247,6 +246,18 @@ async def main() -> None:
 
     logger.info("=== vLLM Benchmark === run_id=%s model=%s", run_id, model)
 
+    # Initialize GPU monitor BEFORE starting server so baseline is
+    # captured before model loading (otherwise peak - baseline ≈ 0).
+    gpu_monitor = GPUMonitor(
+        device_index=int(cfg.gpu.device.split(",")[0]),
+        interval_ms=cfg.gpu.monitor_interval_ms,
+    )
+
+    # Start GPU monitor before server — baseline = idle GPU memory.
+    # Subsequent start(reset_baseline=False) calls preserve this baseline
+    # so peak_vram_mb reflects the full model + inference delta.
+    gpu_monitor.start(reset_baseline=True)
+
     server_proc = start_vllm_server(cfg)
 
     try:
@@ -263,12 +274,6 @@ async def main() -> None:
         # Load tokenizer
         logger.info("Loading tokenizer: %s", model)
         tokenizer = AutoTokenizer.from_pretrained(model, trust_remote_code=True)
-
-        # Initialize GPU monitor
-        gpu_monitor = GPUMonitor(
-            device_index=int(cfg.gpu.device.split(",")[0]),
-            interval_ms=cfg.gpu.monitor_interval_ms,
-        )
 
         # Run tests
         all_results = []
