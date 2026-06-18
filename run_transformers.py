@@ -253,6 +253,9 @@ def run_single_request_tests(model, tokenizer, cfg, run_id, gpu_monitor):
                 mean_tps=round(avg_tps, 2),
                 peak_vram_mb=round(peak_vram, 1),
                 peak_vram_abs_mb=round(peak_vram_abs, 1),
+                kv_cache_usage=-1,  # Not applicable for Transformers
+                num_running_reqs=-1,
+                num_waiting_reqs=-1,
                 run_id=run_id,
                 timestamp=datetime.now().isoformat(),
             )
@@ -338,6 +341,9 @@ def run_concurrent_tests(model, tokenizer, cfg, run_id, gpu_monitor):
                 mean_tps=round(avg_tps, 2),
                 peak_vram_mb=round(peak_vram, 1),
                 peak_vram_abs_mb=round(peak_vram_abs, 1),
+                kv_cache_usage=-1,  # Not applicable for Transformers
+                num_running_reqs=-1,
+                num_waiting_reqs=-1,
                 run_id=run_id,
                 timestamp=datetime.now().isoformat(),
             )

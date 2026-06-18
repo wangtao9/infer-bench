@@ -17,8 +17,11 @@ class BenchmarkResult:
     max_new_tokens: int
     ttft_ms: float          # 首 Token 延迟 (ms)
     mean_tps: float         # 平均吞吐 (tokens/s)
-    peak_vram_mb: float     # 峰值显存增量 (MB)
-    peak_vram_abs_mb: float # 峰值显存绝对占用量 (MB)
+    peak_vram_mb: float     # 峰值显存增量 (MB) — pynvml (Transformers 有意义)
+    peak_vram_abs_mb: float # 峰值显存绝对占用量 (MB) — pynvml
+    kv_cache_usage: float   # KV cache 利用率 (0-1) — 引擎 /metrics 端点
+    num_running_reqs: int   # 运行中请求数 — 引擎 /metrics 端点
+    num_waiting_reqs: int   # 等待中请求数 — 引擎 /metrics 端点
     run_id: str
     timestamp: str
 
@@ -58,7 +61,8 @@ def results_to_csv(
     fieldnames = [
         "engine", "test_type", "batch_size", "prompt_tokens",
         "max_new_tokens", "ttft_ms", "mean_tps", "peak_vram_mb",
-        "peak_vram_abs_mb", "run_id", "timestamp",
+        "peak_vram_abs_mb", "kv_cache_usage", "num_running_reqs",
+        "num_waiting_reqs", "run_id", "timestamp",
     ]
 
     with open(filepath, "w", newline="", encoding="utf-8") as f:
@@ -75,6 +79,9 @@ def results_to_csv(
                 "mean_tps": f"{r.mean_tps:.2f}",
                 "peak_vram_mb": f"{r.peak_vram_mb:.1f}",
                 "peak_vram_abs_mb": f"{r.peak_vram_abs_mb:.1f}",
+                "kv_cache_usage": f"{r.kv_cache_usage:.4f}",
+                "num_running_reqs": r.num_running_reqs,
+                "num_waiting_reqs": r.num_waiting_reqs,
                 "run_id": r.run_id,
                 "timestamp": r.timestamp,
             })

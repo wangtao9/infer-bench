@@ -14,6 +14,7 @@ from datetime import datetime
 
 from common.client import concurrent_stream_requests, stream_request, wait_for_server
 from common.config import load_config
+from common.engine_metrics import fetch_engine_metrics
 from common.gpu import GPUMonitor
 from common.metrics import BenchmarkResult, make_run_id, results_to_csv
 from common.prompts import generate_batch_prompts, generate_prompt
@@ -37,6 +38,7 @@ def start_sglang_server(cfg) -> subprocess.Popen:
         f"python -m sglang.launch_server "
         f"--model-path {model} "
         f"--port {port} "
+        f"--enable-metrics "
         f"{extra_args}"
     )
 
@@ -115,8 +117,13 @@ async def run_single_request_tests(
         avg_ttft = sum(ttfts) / len(ttfts) if ttfts else 0.0
         avg_tps = sum(tps_list) / len(tps_list) if tps_list else 0.0
         peak_vram = gpu_monitor.peak_vram_mb
-
         peak_vram_abs = gpu_monitor.peak_vram_abs_mb
+
+        # Fetch engine internal metrics from /metrics endpoint
+        engine_metrics = await fetch_engine_metrics(base_url, "sglang")
+        kv_usage = engine_metrics.get("kv_cache_usage", -1)
+        num_running = int(engine_metrics.get("num_running_reqs", -1))
+        num_waiting = int(engine_metrics.get("num_waiting_reqs", -1))
 
         results.append(
             BenchmarkResult(
@@ -129,16 +136,21 @@ async def run_single_request_tests(
                 mean_tps=round(avg_tps, 2),
                 peak_vram_mb=round(peak_vram, 1),
                 peak_vram_abs_mb=round(peak_vram_abs, 1),
+                kv_cache_usage=kv_usage,
+                num_running_reqs=num_running,
+                num_waiting_reqs=num_waiting,
                 run_id=run_id,
                 timestamp=datetime.now().isoformat(),
             )
         )
         logger.info(
-            "[single] prompt_length=%d => avg_ttft=%.2f ms, avg_tps=%.2f tok/s, peak_vram=%.1f MB, abs=%.1f MB",
+            "[single] prompt_length=%d => avg_ttft=%.2f ms, avg_tps=%.2f tok/s, kv=%.1f%%, running=%d, waiting=%d",
             prompt_len,
             avg_ttft,
             avg_tps,
-            peak_vram, peak_vram_abs,
+            kv_usage * 100 if kv_usage >= 0 else -1,
+            num_running,
+            num_waiting,
         )
 
     return results
@@ -195,8 +207,13 @@ async def run_concurrent_tests(
         avg_ttft = sum(ttfts) / len(ttfts) if ttfts else 0.0
         avg_tps = sum(tps_list) / len(tps_list) if tps_list else 0.0
         peak_vram = gpu_monitor.peak_vram_mb
-
         peak_vram_abs = gpu_monitor.peak_vram_abs_mb
+
+        # Fetch engine internal metrics from /metrics endpoint
+        engine_metrics = await fetch_engine_metrics(base_url, "sglang")
+        kv_usage = engine_metrics.get("kv_cache_usage", -1)
+        num_running = int(engine_metrics.get("num_running_reqs", -1))
+        num_waiting = int(engine_metrics.get("num_waiting_reqs", -1))
 
         results.append(
             BenchmarkResult(
@@ -209,16 +226,21 @@ async def run_concurrent_tests(
                 mean_tps=round(avg_tps, 2),
                 peak_vram_mb=round(peak_vram, 1),
                 peak_vram_abs_mb=round(peak_vram_abs, 1),
+                kv_cache_usage=kv_usage,
+                num_running_reqs=num_running,
+                num_waiting_reqs=num_waiting,
                 run_id=run_id,
                 timestamp=datetime.now().isoformat(),
             )
         )
         logger.info(
-            "[concurrent] batch_size=%d => avg_ttft=%.2f ms, avg_tps=%.2f tok/s, peak_vram=%.1f MB, abs=%.1f MB",
+            "[concurrent] batch_size=%d => avg_ttft=%.2f ms, avg_tps=%.2f tok/s, kv=%.1f%%, running=%d, waiting=%d",
             batch_size,
             avg_ttft,
             avg_tps,
-            peak_vram, peak_vram_abs,
+            kv_usage * 100 if kv_usage >= 0 else -1,
+            num_running,
+            num_waiting,
         )
 
     return results

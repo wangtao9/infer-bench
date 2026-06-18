@@ -18,6 +18,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from common.client import concurrent_stream_requests, wait_for_server
 from common.config import load_config
+from common.engine_metrics import fetch_engine_metrics
 from common.gpu import GPUMonitor
 from common.metrics import BenchmarkResult, make_run_id, results_to_csv
 from common.prompts import generate_batch_prompts
@@ -212,18 +213,44 @@ async def sweep_http_engine(engine: str, cfg, run_id: str) -> list[BenchmarkResu
                         mean_tps=round(res["concurrent_tps"], 2),
                         peak_vram_mb=round(gpu_monitor.peak_vram_mb, 1),
                         peak_vram_abs_mb=round(gpu_monitor.peak_vram_abs_mb, 1),
+                        kv_cache_usage=-1,
+                        num_running_reqs=-1,
+                        num_waiting_reqs=-1,
                         run_id=run_id,
                         timestamp=datetime.now().isoformat(),
                     )
                 )
+                # Fetch engine internal metrics from /metrics endpoint
+                engine_m = await fetch_engine_metrics(base_url, engine)
+                kv_pct = engine_m.get("kv_cache_usage", -1) * 100 if engine_m.get("kv_cache_usage", -1) >= 0 else -1
+                # Update the last result with engine metrics
+                if engine_m:
+                    last = results[-1]
+                    results[-1] = BenchmarkResult(
+                        engine=last.engine,
+                        test_type=last.test_type,
+                        batch_size=last.batch_size,
+                        prompt_tokens=last.prompt_tokens,
+                        max_new_tokens=last.max_new_tokens,
+                        ttft_ms=last.ttft_ms,
+                        mean_tps=last.mean_tps,
+                        peak_vram_mb=last.peak_vram_mb,
+                        peak_vram_abs_mb=last.peak_vram_abs_mb,
+                        kv_cache_usage=engine_m.get("kv_cache_usage", -1),
+                        num_running_reqs=int(engine_m.get("num_running_reqs", -1)),
+                        num_waiting_reqs=int(engine_m.get("num_waiting_reqs", -1)),
+                        run_id=last.run_id,
+                        timestamp=last.timestamp,
+                    )
                 logger.info(
-                    "[%s sweep] concurrency=%d => ttft=%.2f ms, tps=%.2f tok/s, vram=%.1f MB, abs=%.1f MB",
+                    "[%s sweep] concurrency=%d => ttft=%.2f ms, tps=%.2f tok/s, kv=%.1f%%, running=%d, waiting=%d",
                     engine,
                     batch_size,
                     res["mean_ttft_ms"],
                     res["concurrent_tps"],
-                    gpu_monitor.peak_vram_mb,
-                    gpu_monitor.peak_vram_abs_mb,
+                    kv_pct,
+                    int(engine_m.get("num_running_reqs", -1)),
+                    int(engine_m.get("num_waiting_reqs", -1)),
                 )
 
             except Exception as e:
@@ -242,6 +269,9 @@ async def sweep_http_engine(engine: str, cfg, run_id: str) -> list[BenchmarkResu
                         mean_tps=-1,
                         peak_vram_mb=-1,
                         peak_vram_abs_mb=-1,
+                        kv_cache_usage=-1,
+                        num_running_reqs=-1,
+                        num_waiting_reqs=-1,
                         run_id=run_id,
                         timestamp=datetime.now().isoformat(),
                     )
@@ -360,6 +390,9 @@ def sweep_transformers(cfg, run_id: str) -> list[BenchmarkResult]:
                     mean_tps=round(concurrent_tps, 2),
                     peak_vram_mb=round(peak_vram, 1),
                     peak_vram_abs_mb=round(peak_vram_abs, 1),
+                    kv_cache_usage=-1,  # Not applicable for Transformers
+                    num_running_reqs=-1,
+                    num_waiting_reqs=-1,
                     run_id=run_id,
                     timestamp=datetime.now().isoformat(),
                 )
