@@ -240,6 +240,8 @@ def run_single_request_tests(model, tokenizer, cfg, run_id, gpu_monitor):
         avg_tps = sum(tps_list) / len(tps_list) if tps_list else 0.0
         peak_vram = gpu_monitor.peak_vram_mb
 
+        peak_vram_abs = gpu_monitor.peak_vram_abs_mb
+
         results.append(
             BenchmarkResult(
                 engine="transformers",
@@ -250,16 +252,17 @@ def run_single_request_tests(model, tokenizer, cfg, run_id, gpu_monitor):
                 ttft_ms=round(avg_ttft, 2),
                 mean_tps=round(avg_tps, 2),
                 peak_vram_mb=round(peak_vram, 1),
+                peak_vram_abs_mb=round(peak_vram_abs, 1),
                 run_id=run_id,
                 timestamp=datetime.now().isoformat(),
             )
         )
         logger.info(
-            "[single] prompt_length=%d => avg_ttft=%.2f ms, avg_tps=%.2f tok/s, peak_vram=%.1f MB",
+            "[single] prompt_length=%d => avg_ttft=%.2f ms, avg_tps=%.2f tok/s, peak_vram=%.1f MB, abs=%.1f MB",
             prompt_len,
             avg_ttft,
             avg_tps,
-            peak_vram,
+            peak_vram, peak_vram_abs,
         )
 
     return results
@@ -322,6 +325,8 @@ def run_concurrent_tests(model, tokenizer, cfg, run_id, gpu_monitor):
         avg_tps = sum(tps_list) / len(tps_list) if tps_list else 0.0
         peak_vram = gpu_monitor.peak_vram_mb
 
+        peak_vram_abs = gpu_monitor.peak_vram_abs_mb
+
         results.append(
             BenchmarkResult(
                 engine="transformers",
@@ -332,16 +337,17 @@ def run_concurrent_tests(model, tokenizer, cfg, run_id, gpu_monitor):
                 ttft_ms=round(avg_ttft, 2),
                 mean_tps=round(avg_tps, 2),
                 peak_vram_mb=round(peak_vram, 1),
+                peak_vram_abs_mb=round(peak_vram_abs, 1),
                 run_id=run_id,
                 timestamp=datetime.now().isoformat(),
             )
         )
         logger.info(
-            "[concurrent] batch_size=%d => avg_ttft=%.2f ms, avg_tps=%.2f tok/s, peak_vram=%.1f MB",
+            "[concurrent] batch_size=%d => avg_ttft=%.2f ms, avg_tps=%.2f tok/s, peak_vram=%.1f MB, abs=%.1f MB",
             batch_size,
             avg_ttft,
             avg_tps,
-            peak_vram,
+            peak_vram, peak_vram_abs,
         )
 
     return results

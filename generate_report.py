@@ -59,7 +59,7 @@ def load_results(results_dir: str) -> pd.DataFrame:
     df = pd.concat(dfs, ignore_index=True)
 
     # 过滤掉 -1 值（失败的测试）
-    numeric_cols = ["ttft_ms", "mean_tps", "peak_vram_mb"]
+    numeric_cols = ["ttft_ms", "mean_tps", "peak_vram_mb", "peak_vram_abs_mb"]
     for col in numeric_cols:
         if col in df.columns:
             df = df[df[col] != -1]
@@ -333,8 +333,11 @@ def plot_vram_comparison(df: pd.DataFrame, output_dir: str) -> None:
         return
 
     # 按 engine + batch_size 聚合平均 VRAM
+    # 优先使用 peak_vram_abs_mb（绝对占用量），vLLM/SGLang 预分配引擎下
+    # peak_vram_mb（增量）始终为 0，abs 才有意义
+    vram_col = "peak_vram_abs_mb" if "peak_vram_abs_mb" in subset.columns else "peak_vram_mb"
     grouped = (
-        subset.groupby(["engine", "batch_size"])["peak_vram_mb"]
+        subset.groupby(["engine", "batch_size"])[vram_col]
         .mean()
         .reset_index()
     )
@@ -354,7 +357,7 @@ def plot_vram_comparison(df: pd.DataFrame, output_dir: str) -> None:
         vram_vals = []
         for bs in batch_sizes:
             row = eng_data[eng_data["batch_size"] == bs]
-            vram_vals.append(row["peak_vram_mb"].values[0] if not row.empty else 0)
+            vram_vals.append(row[vram_col].values[0] if not row.empty else 0)
 
         bars = ax.bar(
             x + i * width,
@@ -410,10 +413,12 @@ def plot_radar(df: pd.DataFrame, output_dir: str) -> None:
         return
 
     # 计算每个引擎的平均指标
+    # 优先使用 peak_vram_abs_mb（绝对占用量），vLLM/SGLang 预分配引擎下增量无意义
+    vram_col = "peak_vram_abs_mb" if "peak_vram_abs_mb" in df.columns else "peak_vram_mb"
     engine_stats = df.groupby("engine").agg(
         avg_ttft=("ttft_ms", "mean"),
         avg_tps=("mean_tps", "mean"),
-        avg_vram=("peak_vram_mb", "mean"),
+        avg_vram=(vram_col, "mean"),
     ).reset_index()
 
     if len(engine_stats) == 0:
@@ -539,12 +544,13 @@ def generate_markdown_report(
         lines.append("| 引擎 | 并发数 | TTFT (ms) | TPS (tokens/s) | 峰值显存 (MB) |")
         lines.append("|------|--------|-----------|----------------|---------------|")
         for _, row in concurrent.sort_values(["engine", "batch_size"]).iterrows():
+            vram = row.get("peak_vram_abs_mb", row.get("peak_vram_mb", 0))
             lines.append(
                 f"| {ENGINE_LABELS.get(row['engine'], row['engine'])} "
                 f"| {int(row['batch_size'])} "
                 f"| {row['ttft_ms']:.2f} "
                 f"| {row['mean_tps']:.2f} "
-                f"| {row['peak_vram_mb']:.0f} |"
+                f"| {vram:.0f} |"
             )
         lines.append("")
     else:
@@ -562,12 +568,13 @@ def generate_markdown_report(
         lines.append("| 引擎 | 并发数 | TTFT (ms) | TPS (tokens/s) | 峰值显存 (MB) |")
         lines.append("|------|--------|-----------|----------------|---------------|")
         for _, row in sweep.sort_values(["engine", "batch_size"]).iterrows():
+            vram = row.get("peak_vram_abs_mb", row.get("peak_vram_mb", 0))
             lines.append(
                 f"| {ENGINE_LABELS.get(row['engine'], row['engine'])} "
                 f"| {int(row['batch_size'])} "
                 f"| {row['ttft_ms']:.2f} "
                 f"| {row['mean_tps']:.2f} "
-                f"| {row['peak_vram_mb']:.0f} |"
+                f"| {vram:.0f} |"
             )
         lines.append("")
     else:

@@ -3,7 +3,7 @@ sglang[all]
 torch
 transformers
 accelerate
-pynvml
+nvidia-ml-py
 aiohttp
 pyyaml
 matplotlib

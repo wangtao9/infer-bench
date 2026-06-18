@@ -211,17 +211,19 @@ async def sweep_http_engine(engine: str, cfg, run_id: str) -> list[BenchmarkResu
                         ttft_ms=round(res["mean_ttft_ms"], 2),
                         mean_tps=round(res["concurrent_tps"], 2),
                         peak_vram_mb=round(gpu_monitor.peak_vram_mb, 1),
+                        peak_vram_abs_mb=round(gpu_monitor.peak_vram_abs_mb, 1),
                         run_id=run_id,
                         timestamp=datetime.now().isoformat(),
                     )
                 )
                 logger.info(
-                    "[%s sweep] concurrency=%d => ttft=%.2f ms, tps=%.2f tok/s, vram=%.1f MB",
+                    "[%s sweep] concurrency=%d => ttft=%.2f ms, tps=%.2f tok/s, vram=%.1f MB, abs=%.1f MB",
                     engine,
                     batch_size,
                     res["mean_ttft_ms"],
                     res["concurrent_tps"],
                     gpu_monitor.peak_vram_mb,
+                    gpu_monitor.peak_vram_abs_mb,
                 )
 
             except Exception as e:
@@ -239,6 +241,7 @@ async def sweep_http_engine(engine: str, cfg, run_id: str) -> list[BenchmarkResu
                         ttft_ms=-1,
                         mean_tps=-1,
                         peak_vram_mb=-1,
+                        peak_vram_abs_mb=-1,
                         run_id=run_id,
                         timestamp=datetime.now().isoformat(),
                     )
@@ -344,6 +347,7 @@ def sweep_transformers(cfg, run_id: str) -> list[BenchmarkResult]:
             concurrent_tps = total_tokens / total_time_s if total_time_s > 0 else 0.0
             mean_ttft_ms = total_time_s * 1000.0 / len(prompts)  # estimate
             peak_vram = gpu_monitor.peak_vram_mb
+            peak_vram_abs = gpu_monitor.peak_vram_abs_mb
 
             results.append(
                 BenchmarkResult(
@@ -355,16 +359,17 @@ def sweep_transformers(cfg, run_id: str) -> list[BenchmarkResult]:
                     ttft_ms=round(mean_ttft_ms, 2),
                     mean_tps=round(concurrent_tps, 2),
                     peak_vram_mb=round(peak_vram, 1),
+                    peak_vram_abs_mb=round(peak_vram_abs, 1),
                     run_id=run_id,
                     timestamp=datetime.now().isoformat(),
                 )
             )
             logger.info(
-                "[transformers sweep] batch_size=%d => ttft=%.2f ms, tps=%.2f tok/s, vram=%.1f MB",
+                "[transformers sweep] batch_size=%d => ttft=%.2f ms, tps=%.2f tok/s, vram=%.1f MB, abs=%.1f MB",
                 batch_size,
                 mean_ttft_ms,
                 concurrent_tps,
-                peak_vram,
+                peak_vram, peak_vram_abs,
             )
 
         except Exception as e:
@@ -384,6 +389,7 @@ def sweep_transformers(cfg, run_id: str) -> list[BenchmarkResult]:
                     ttft_ms=-1,
                     mean_tps=-1,
                     peak_vram_mb=-1,
+                    peak_vram_abs_mb=-1,
                     run_id=run_id,
                     timestamp=datetime.now().isoformat(),
                 )

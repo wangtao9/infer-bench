@@ -18,6 +18,7 @@ class BenchmarkResult:
     ttft_ms: float          # 首 Token 延迟 (ms)
     mean_tps: float         # 平均吞吐 (tokens/s)
     peak_vram_mb: float     # 峰值显存增量 (MB)
+    peak_vram_abs_mb: float # 峰值显存绝对占用量 (MB)
     run_id: str
     timestamp: str
 
@@ -57,7 +58,7 @@ def results_to_csv(
     fieldnames = [
         "engine", "test_type", "batch_size", "prompt_tokens",
         "max_new_tokens", "ttft_ms", "mean_tps", "peak_vram_mb",
-        "run_id", "timestamp",
+        "peak_vram_abs_mb", "run_id", "timestamp",
     ]
 
     with open(filepath, "w", newline="", encoding="utf-8") as f:
@@ -73,6 +74,7 @@ def results_to_csv(
                 "ttft_ms": f"{r.ttft_ms:.2f}",
                 "mean_tps": f"{r.mean_tps:.2f}",
                 "peak_vram_mb": f"{r.peak_vram_mb:.1f}",
+                "peak_vram_abs_mb": f"{r.peak_vram_abs_mb:.1f}",
                 "run_id": r.run_id,
                 "timestamp": r.timestamp,
             })
