@@ -59,7 +59,8 @@ def load_results(results_dir: str) -> pd.DataFrame:
     df = pd.concat(dfs, ignore_index=True)
 
     # 过滤掉 -1 值（失败的测试）
-    numeric_cols = ["ttft_ms", "mean_tps", "peak_vram_mb", "peak_vram_abs_mb"]
+    numeric_cols = ["ttft_ms", "mean_tps", "peak_vram_mb", "peak_vram_abs_mb",
+                    "median_itl_ms", "median_e2el_ms"]
     for col in numeric_cols:
         if col in df.columns:
             df = df[df[col] != -1]
@@ -72,7 +73,7 @@ def load_results(results_dir: str) -> pd.DataFrame:
 # ── 图表 1: TTFT vs 输入长度（单请求）─────────────────────────
 
 def plot_single_request_ttft(df: pd.DataFrame, output_dir: str) -> None:
-    """绘图表 1: 单请求 TTFT vs 输入长度（3 条线）。
+    """绘图表 1: 单请求 TTFT vs 输入长度（mean 实线 + P99 虚线）。
 
     Args:
         df: 测试结果 DataFrame。
@@ -84,6 +85,7 @@ def plot_single_request_ttft(df: pd.DataFrame, output_dir: str) -> None:
         return
 
     fig, ax = plt.subplots(figsize=(8, 5))
+    has_p99 = "p99_ttft_ms" in subset.columns
 
     for engine in ["vllm", "sglang", "transformers"]:
         eng_data = subset[subset["engine"] == engine].sort_values("prompt_tokens")
@@ -98,10 +100,22 @@ def plot_single_request_ttft(df: pd.DataFrame, output_dir: str) -> None:
             label=ENGINE_LABELS[engine],
             linewidth=2,
         )
+        # P99 虚线
+        if has_p99:
+            grouped_p99 = eng_data.groupby("prompt_tokens")["p99_ttft_ms"].mean().reset_index()
+            ax.plot(
+                grouped_p99["prompt_tokens"],
+                grouped_p99["p99_ttft_ms"],
+                marker="o",
+                color=ENGINE_COLORS[engine],
+                linestyle="--",
+                linewidth=1.5,
+                alpha=0.7,
+            )
 
     ax.set_xlabel("输入长度 (tokens)")
     ax.set_ylabel("TTFT (ms)")
-    ax.set_title("TTFT vs 输入长度（单请求）")
+    ax.set_title("TTFT vs 输入长度（单请求）— 实线=mean, 虚线=P99")
     ax.legend(title="引擎")
     fig.tight_layout()
 
@@ -201,7 +215,7 @@ def plot_concurrent_tps(df: pd.DataFrame, output_dir: str) -> None:
 # ── 图表 4: TTFT vs 并发数（concurrent）──────────────────────
 
 def plot_concurrent_ttft(df: pd.DataFrame, output_dir: str) -> None:
-    """绘图表 4: 并发 TTFT vs 并发数（3 条线，x 轴 log2 刻度）。
+    """绘图表 4: 并发 TTFT vs 并发数（mean 实线 + P99 虚线）。
 
     Args:
         df: 测试结果 DataFrame。
@@ -213,6 +227,7 @@ def plot_concurrent_ttft(df: pd.DataFrame, output_dir: str) -> None:
         return
 
     fig, ax = plt.subplots(figsize=(8, 5))
+    has_p99 = "p99_ttft_ms" in subset.columns
 
     for engine in ["vllm", "sglang", "transformers"]:
         eng_data = subset[subset["engine"] == engine].sort_values("batch_size")
@@ -227,13 +242,25 @@ def plot_concurrent_ttft(df: pd.DataFrame, output_dir: str) -> None:
             label=ENGINE_LABELS[engine],
             linewidth=2,
         )
+        # P99 虚线
+        if has_p99:
+            grouped_p99 = eng_data.groupby("batch_size")["p99_ttft_ms"].mean().reset_index()
+            ax.plot(
+                grouped_p99["batch_size"],
+                grouped_p99["p99_ttft_ms"],
+                marker="o",
+                color=ENGINE_COLORS[engine],
+                linestyle="--",
+                linewidth=1.5,
+                alpha=0.7,
+            )
 
     ax.set_xscale("log", base=2)
     ax.xaxis.set_major_formatter(mticker.ScalarFormatter())
     ax.xaxis.set_minor_formatter(mticker.NullFormatter())
     ax.set_xlabel("并发数")
     ax.set_ylabel("TTFT (ms)")
-    ax.set_title("TTFT vs 并发数（并发测试）")
+    ax.set_title("TTFT vs 并发数（并发测试）— 实线=mean, 虚线=P99")
     ax.legend(title="引擎")
     fig.tight_layout()
 
@@ -394,13 +421,147 @@ def plot_vram_comparison(df: pd.DataFrame, output_dir: str) -> None:
     print(f"  saved: {path}")
 
 
+# ── 图表 8: ITL P99 vs 输入长度（单请求）─────────────────────
+
+
+def plot_single_request_itl(df: pd.DataFrame, output_dir: str) -> None:
+    """绘图表 8: 单请求 ITL P99 vs 输入长度。"""
+    subset = df[df["test_type"] == "single"].copy()
+    if subset.empty or "p99_itl_ms" not in subset.columns:
+        print("[SKIP] No single-request ITL data for chart 8")
+        return
+    # 过滤掉 ITL 为 -1 的行（Transformers 不可测）
+    subset = subset[subset["p99_itl_ms"] > 0]
+    if subset.empty:
+        print("[SKIP] No valid ITL data (all -1 or missing)")
+        return
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+
+    for engine in ["vllm", "sglang", "transformers"]:
+        eng_data = subset[subset["engine"] == engine].sort_values("prompt_tokens")
+        if eng_data.empty:
+            continue
+        grouped = eng_data.groupby("prompt_tokens")["p99_itl_ms"].mean().reset_index()
+        ax.plot(
+            grouped["prompt_tokens"],
+            grouped["p99_itl_ms"],
+            marker="o",
+            color=ENGINE_COLORS[engine],
+            label=ENGINE_LABELS[engine],
+            linewidth=2,
+        )
+
+    ax.set_xlabel("输入长度 (tokens)")
+    ax.set_ylabel("ITL P99 (ms)")
+    ax.set_title("ITL P99 vs 输入长度（单请求）")
+    ax.legend(title="引擎")
+    fig.tight_layout()
+
+    path = os.path.join(output_dir, "8_itl_vs_input_length.png")
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    print(f"  saved: {path}")
+
+
+# ── 图表 9: TPOT P99 vs 并发数 ────────────────────────────────
+
+
+def plot_concurrent_tpot(df: pd.DataFrame, output_dir: str) -> None:
+    """绘图表 9: TPOT P99 vs 并发数（concurrent + sweep 数据）。"""
+    subset = df[df["test_type"].isin(["concurrent", "sweep"])].copy()
+    if subset.empty or "p99_tpot_ms" not in subset.columns:
+        print("[SKIP] No TPOT data for chart 9")
+        return
+    subset = subset[subset["p99_tpot_ms"] > 0]
+    if subset.empty:
+        print("[SKIP] No valid TPOT data (all -1 or missing)")
+        return
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+
+    for engine in ["vllm", "sglang", "transformers"]:
+        eng_data = subset[subset["engine"] == engine].sort_values("batch_size")
+        if eng_data.empty:
+            continue
+        grouped = eng_data.groupby("batch_size")["p99_tpot_ms"].mean().reset_index()
+        ax.plot(
+            grouped["batch_size"],
+            grouped["p99_tpot_ms"],
+            marker="o",
+            color=ENGINE_COLORS[engine],
+            label=ENGINE_LABELS[engine],
+            linewidth=2,
+        )
+
+    ax.set_xscale("log", base=2)
+    ax.xaxis.set_major_formatter(mticker.ScalarFormatter())
+    ax.xaxis.set_minor_formatter(mticker.NullFormatter())
+    ax.set_xlabel("并发数")
+    ax.set_ylabel("TPOT P99 (ms)")
+    ax.set_title("TPOT P99 vs 并发数")
+    ax.legend(title="引擎")
+    fig.tight_layout()
+
+    path = os.path.join(output_dir, "9_tpot_vs_concurrency.png")
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    print(f"  saved: {path}")
+
+
+# ── 图表 10: E2EL P99 vs 并发数 ───────────────────────────────
+
+
+def plot_concurrent_e2el(df: pd.DataFrame, output_dir: str) -> None:
+    """绘图表 10: E2EL P99 vs 并发数（concurrent + sweep 数据）。"""
+    subset = df[df["test_type"].isin(["concurrent", "sweep"])].copy()
+    if subset.empty or "p99_e2el_ms" not in subset.columns:
+        print("[SKIP] No E2EL data for chart 10")
+        return
+    subset = subset[subset["p99_e2el_ms"] > 0]
+    if subset.empty:
+        print("[SKIP] No valid E2EL data (all -1 or missing)")
+        return
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+
+    for engine in ["vllm", "sglang", "transformers"]:
+        eng_data = subset[subset["engine"] == engine].sort_values("batch_size")
+        if eng_data.empty:
+            continue
+        grouped = eng_data.groupby("batch_size")["p99_e2el_ms"].mean().reset_index()
+        ax.plot(
+            grouped["batch_size"],
+            grouped["p99_e2el_ms"],
+            marker="o",
+            color=ENGINE_COLORS[engine],
+            label=ENGINE_LABELS[engine],
+            linewidth=2,
+        )
+
+    ax.set_xscale("log", base=2)
+    ax.xaxis.set_major_formatter(mticker.ScalarFormatter())
+    ax.xaxis.set_minor_formatter(mticker.NullFormatter())
+    ax.set_xlabel("并发数")
+    ax.set_ylabel("E2EL P99 (ms)")
+    ax.set_title("E2EL P99 vs 并发数")
+    ax.legend(title="引擎")
+    fig.tight_layout()
+
+    path = os.path.join(output_dir, "10_e2el_vs_concurrency.png")
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    print(f"  saved: {path}")
+
+
 # ── 图表 7: 综合 Radar 图 ─────────────────────────────────────
 
 def plot_radar(df: pd.DataFrame, output_dir: str) -> None:
-    """绘图表 7: 综合雷达图（3 维度: TTFT↓, TPS↑, 显存效率↑）。
+    """绘图表 7: 综合雷达图（4 维度: TTFT↓, ITL↓, TPS↑, 显存效率↑）。
 
     归一化方法:
     - TTFT: 取倒数后归一化到 0-1（越小越好 → 越大越好）
+    - ITL P99: 取倒数后归一化到 0-1（越小越好 → 越大越好）
     - TPS: 直接归一化到 0-1（越大越好）
     - 显存效率 = TPS / VRAM: 归一化到 0-1（越大越好）
 
@@ -415,11 +576,22 @@ def plot_radar(df: pd.DataFrame, output_dir: str) -> None:
     # 计算每个引擎的平均指标
     # 优先使用 peak_vram_abs_mb（绝对占用量），vLLM/SGLang 预分配引擎下增量无意义
     vram_col = "peak_vram_abs_mb" if "peak_vram_abs_mb" in df.columns else "peak_vram_mb"
-    engine_stats = df.groupby("engine").agg(
-        avg_ttft=("ttft_ms", "mean"),
-        avg_tps=("mean_tps", "mean"),
-        avg_vram=(vram_col, "mean"),
-    ).reset_index()
+    agg_dict = {
+        "avg_ttft": ("ttft_ms", "mean"),
+        "avg_tps": ("mean_tps", "mean"),
+        "avg_vram": (vram_col, "mean"),
+    }
+    # ITL P99: 如果有数据，取均值（过滤 -1）
+    if "p99_itl_ms" in df.columns:
+        # 临时替换 -1 为 NaN 以便 mean() 忽略
+        df_temp = df.copy()
+        df_temp.loc[df_temp["p99_itl_ms"] < 0, "p99_itl_ms"] = float("nan")
+        avg_itl = df_temp.groupby("engine")["p99_itl_ms"].mean()
+        has_itl = True
+    else:
+        has_itl = False
+
+    engine_stats = df.groupby("engine").agg(**agg_dict).reset_index()
 
     if len(engine_stats) == 0:
         print("[SKIP] Not enough data for radar chart")
@@ -434,10 +606,18 @@ def plot_radar(df: pd.DataFrame, output_dir: str) -> None:
             "tps": row["avg_tps"],
             "vram_eff": row["avg_tps"] / row["avg_vram"] if row["avg_vram"] > 0 else 0,
         }
+        if has_itl and eng in avg_itl.index and not np.isnan(avg_itl[eng]) and avg_itl[eng] > 0:
+            scores[eng]["itl_inv"] = 1.0 / avg_itl[eng]
+        else:
+            scores[eng]["itl_inv"] = 0
 
     # 归一化到 0-1
-    categories = ["TTFT↓", "TPS↑", "显存效率↑"]
-    raw_keys = ["ttft_inv", "tps", "vram_eff"]
+    if has_itl:
+        categories = ["TTFT↓", "ITL↓", "TPS↑", "显存效率↑"]
+        raw_keys = ["ttft_inv", "itl_inv", "tps", "vram_eff"]
+    else:
+        categories = ["TTFT↓", "TPS↑", "显存效率↑"]
+        raw_keys = ["ttft_inv", "tps", "vram_eff"]
 
     for key in raw_keys:
         vals = [scores[e][key] for e in scores]
@@ -518,16 +698,48 @@ def generate_markdown_report(
     # ── Section 1: 单请求延迟 ──
     lines.append("## 1. 单请求延迟\n")
     single = df[df["test_type"] == "single"] if not df.empty else pd.DataFrame()
+    has_p99 = "p99_ttft_ms" in df.columns if not df.empty else False
+    has_itl = "p99_itl_ms" in df.columns if not df.empty else False
     if not single.empty:
-        lines.append("| 引擎 | 输入长度 (tokens) | TTFT (ms) | TPS (tokens/s) |")
-        lines.append("|------|-------------------|-----------|----------------|")
+        # 表头
+        cols = "| 引擎 | 输入长度 (tokens) | TTFT mean (ms)"
+        sep = "|------|-------------------|---------------"
+        row_fmt = "f'| {{eng}} | {{prompt}} | {{ttft:.2f}}"
+        if has_p99:
+            cols += " | TTFT P99 (ms)"
+            sep += "|--------------"
+            row_fmt += " | {{p99_ttft:.2f}}"
+        if has_itl:
+            cols += " | ITL P99 (ms)"
+            sep += "|-------------"
+            row_fmt += " | {{p99_itl:.2f}}" if has_itl else ""
+        cols += " | TPS (tokens/s) |"
+        sep += "|----------------|"
+        row_fmt += " | {{tps:.2f}} |'"
+        lines.append(cols)
+        lines.append(sep)
         for _, row in single.sort_values(["engine", "prompt_tokens"]).iterrows():
-            lines.append(
-                f"| {ENGINE_LABELS.get(row['engine'], row['engine'])} "
-                f"| {int(row['prompt_tokens'])} "
-                f"| {row['ttft_ms']:.2f} "
-                f"| {row['mean_tps']:.2f} |"
-            )
+            eng = ENGINE_LABELS.get(row['engine'], row['engine'])
+            vals = {
+                "eng": eng,
+                "prompt": int(row['prompt_tokens']),
+                "ttft": row['ttft_ms'],
+                "tps": row['mean_tps'],
+            }
+            if has_p99:
+                vals["p99_ttft"] = row['p99_ttft_ms']
+            if has_itl:
+                itl_val = row['p99_itl_ms']
+                vals["p99_itl"] = "N/A" if itl_val < 0 else f"{itl_val:.2f}"
+            # 手动组装行以处理 N/A
+            parts = [eng, str(int(row['prompt_tokens'])), f"{row['ttft_ms']:.2f}"]
+            if has_p99:
+                parts.append(f"{row['p99_ttft_ms']:.2f}")
+            if has_itl:
+                itl_val = row['p99_itl_ms']
+                parts.append("N/A" if itl_val < 0 else f"{itl_val:.2f}")
+            parts.append(f"{row['mean_tps']:.2f}")
+            lines.append("| " + " | ".join(parts) + " |")
         lines.append("")
     else:
         lines.append("*无单请求数据*\n")
@@ -536,22 +748,38 @@ def generate_markdown_report(
     lines.append("![TTFT vs 输入长度](1_ttft_vs_input_length.png)\n")
     lines.append("### TPS vs 输入长度\n")
     lines.append("![TPS vs 输入长度](2_tps_vs_input_length.png)\n")
+    lines.append("### ITL P99 vs 输入长度\n")
+    lines.append("![ITL P99 vs 输入长度](8_itl_vs_input_length.png)\n")
 
     # ── Section 2: 并发吞吐 ──
     lines.append("## 2. 并发吞吐\n")
     concurrent = df[df["test_type"] == "concurrent"] if not df.empty else pd.DataFrame()
     if not concurrent.empty:
-        lines.append("| 引擎 | 并发数 | TTFT (ms) | TPS (tokens/s) | 峰值显存 (MB) |")
-        lines.append("|------|--------|-----------|----------------|---------------|")
+        has_p99 = "p99_ttft_ms" in concurrent.columns
+        has_e2el = "p99_e2el_ms" in concurrent.columns
+        cols = "| 引擎 | 并发数 | TTFT mean (ms)"
+        sep = "|------|--------|---------------"
+        if has_p99:
+            cols += " | TTFT P99 (ms)"
+            sep += "|--------------"
+        if has_e2el:
+            cols += " | E2EL P99 (ms)"
+            sep += "|--------------"
+        cols += " | TPS (tokens/s) | 峰值显存 (MB) |"
+        sep += "|----------------|---------------|"
+        lines.append(cols)
+        lines.append(sep)
         for _, row in concurrent.sort_values(["engine", "batch_size"]).iterrows():
+            eng = ENGINE_LABELS.get(row['engine'], row['engine'])
             vram = row.get("peak_vram_abs_mb", row.get("peak_vram_mb", 0))
-            lines.append(
-                f"| {ENGINE_LABELS.get(row['engine'], row['engine'])} "
-                f"| {int(row['batch_size'])} "
-                f"| {row['ttft_ms']:.2f} "
-                f"| {row['mean_tps']:.2f} "
-                f"| {vram:.0f} |"
-            )
+            parts = [eng, str(int(row['batch_size'])), f"{row['ttft_ms']:.2f}"]
+            if has_p99:
+                parts.append(f"{row['p99_ttft_ms']:.2f}")
+            if has_e2el:
+                parts.append(f"{row['p99_e2el_ms']:.2f}")
+            parts.append(f"{row['mean_tps']:.2f}")
+            parts.append(f"{vram:.0f}")
+            lines.append("| " + " | ".join(parts) + " |")
         lines.append("")
     else:
         lines.append("*无并发数据*\n")
@@ -560,22 +788,40 @@ def generate_markdown_report(
     lines.append("![TPS vs 并发数](3_tps_vs_concurrency.png)\n")
     lines.append("### TTFT vs 并发数\n")
     lines.append("![TTFT vs 并发数](4_ttft_vs_concurrency.png)\n")
+    lines.append("### TPOT P99 vs 并发数\n")
+    lines.append("![TPOT P99 vs 并发数](9_tpot_vs_concurrency.png)\n")
+    lines.append("### E2EL P99 vs 并发数\n")
+    lines.append("![E2EL P99 vs 并发数](10_e2el_vs_concurrency.png)\n")
 
     # ── Section 3: 渐进并发扫描 ──
     lines.append("## 3. 渐进并发扫描\n")
     sweep = df[df["test_type"] == "sweep"] if not df.empty else pd.DataFrame()
     if not sweep.empty:
-        lines.append("| 引擎 | 并发数 | TTFT (ms) | TPS (tokens/s) | 峰值显存 (MB) |")
-        lines.append("|------|--------|-----------|----------------|---------------|")
+        has_p99 = "p99_ttft_ms" in sweep.columns
+        has_e2el = "p99_e2el_ms" in sweep.columns
+        cols = "| 引擎 | 并发数 | TTFT mean (ms)"
+        sep = "|------|--------|---------------"
+        if has_p99:
+            cols += " | TTFT P99 (ms)"
+            sep += "|--------------"
+        if has_e2el:
+            cols += " | E2EL P99 (ms)"
+            sep += "|--------------"
+        cols += " | TPS (tokens/s) | 峰值显存 (MB) |"
+        sep += "|----------------|---------------|"
+        lines.append(cols)
+        lines.append(sep)
         for _, row in sweep.sort_values(["engine", "batch_size"]).iterrows():
+            eng = ENGINE_LABELS.get(row['engine'], row['engine'])
             vram = row.get("peak_vram_abs_mb", row.get("peak_vram_mb", 0))
-            lines.append(
-                f"| {ENGINE_LABELS.get(row['engine'], row['engine'])} "
-                f"| {int(row['batch_size'])} "
-                f"| {row['ttft_ms']:.2f} "
-                f"| {row['mean_tps']:.2f} "
-                f"| {vram:.0f} |"
-            )
+            parts = [eng, str(int(row['batch_size'])), f"{row['ttft_ms']:.2f}"]
+            if has_p99:
+                parts.append(f"{row['p99_ttft_ms']:.2f}")
+            if has_e2el:
+                parts.append(f"{row['p99_e2el_ms']:.2f}")
+            parts.append(f"{row['mean_tps']:.2f}")
+            parts.append(f"{vram:.0f}")
+            lines.append("| " + " | ".join(parts) + " |")
         lines.append("")
     else:
         lines.append("*无扫描数据*\n")
@@ -594,6 +840,8 @@ def generate_markdown_report(
     lines.append("| 维度 | 含义 | 方向 |")
     lines.append("|------|------|------|")
     lines.append("| TTFT↓ | 首 Token 延迟的倒数（越低越好） | 归一化前取倒数 → 值越大越好 |")
+    if has_itl:
+        lines.append("| ITL↓ | Inter-Token Latency P99 的倒数（越低越好） | 归一化前取倒数 → 值越大越好 |")
     lines.append("| TPS↑ | 平均吞吐量 | 越高越好 |")
     lines.append("| 显存效率↑ | TPS / 峰值显存 | 单位显存产出的吞吐，越高越好 |")
     lines.append("")
@@ -653,6 +901,9 @@ def main() -> None:
     plot_sweep_dual_axis(df, output_dir)
     plot_vram_comparison(df, output_dir)
     plot_radar(df, output_dir)
+    plot_single_request_itl(df, output_dir)
+    plot_concurrent_tpot(df, output_dir)
+    plot_concurrent_e2el(df, output_dir)
 
     # 生成 Markdown 报告
     print("\nGenerating markdown report...")

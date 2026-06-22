@@ -26,6 +26,14 @@ logger = logging.getLogger(__name__)
 def parse_prometheus_metrics(text: str) -> dict[str, float]:
     """解析 Prometheus /metrics 文本输出，提取 vllm: / sglang: 前缀的指标。
 
+    Prometheus text format example:
+        vllm:kv_cache_usage_perc 0.35
+        vllm:num_requests_waiting{reason="capacity"} 5
+        sglang:full_token_usage 0.42
+
+    Note: metric names with colons are valid in Prometheus but the colon
+    is NOT a regex word character, so we use [\\w:]+ to match them.
+
     Args:
         text: /metrics 端点返回的文本
 
@@ -39,7 +47,10 @@ def parse_prometheus_metrics(text: str) -> dict[str, float]:
             continue
         # 匹配形如: vllm:kv_cache_usage_perc 0.35
         # 或带标签: vllm:num_requests_waiting{reason="capacity"} 5
-        match = re.match(r'^((?:vllam|sglang|vllm):\S+?)(?:\{[^}]*\})?\s+([\d.e+-]+|nan|inf)', line)
+        match = re.match(
+            r'^([\w:]+)(?:\{[^}]*\})?\s+([\d.eE+-]+|nan|inf)',
+            line,
+        )
         if not match:
             continue
         name = match.group(1)
@@ -48,7 +59,9 @@ def parse_prometheus_metrics(text: str) -> dict[str, float]:
             value = float(value_str)
         except ValueError:
             continue
-        result[name] = value
+        # 只保留 vllm: / sglang: 前缀的指标
+        if name.startswith(("vllm:", "sglang:")):
+            result[name] = value
     return result
 
 
@@ -127,6 +140,23 @@ async def fetch_engine_metrics(
         return {}
 
     parsed = parse_prometheus_metrics(text)
+
+    # Debug: log found metric names (first 20) to diagnose parsing issues
+    vllm_sglang_keys = [k for k in parsed if k.startswith(("vllm:", "sglang:"))]
+    if vllm_sglang_keys:
+        logger.info(
+            "Fetched %d %s metrics from /metrics (sample: %s)",
+            len(vllm_sglang_keys), engine,
+            ", ".join(f"{k}={parsed[k]}" for k in vllm_sglang_keys[:10]),
+        )
+    else:
+        logger.warning(
+            "No vllm:/sglang: metrics found in /metrics response for %s "
+            "(total lines: %d, sample: %s)",
+            engine,
+            len(text.splitlines()),
+            text[:500] if text else "(empty)",
+        )
 
     # 选择对应的指标键名映射
     if engine == "vllm":

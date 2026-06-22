@@ -7,5 +7,6 @@ nvidia-ml-py
 aiohttp
 pyyaml
 matplotlib
+numpy
 seaborn
 pandas

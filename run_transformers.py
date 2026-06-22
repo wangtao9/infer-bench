@@ -16,7 +16,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStream
 
 from common.config import load_config
 from common.gpu import GPUMonitor
-from common.metrics import BenchmarkResult, make_run_id, results_to_csv
+from common.metrics import BenchmarkResult, compute_percentile_stats, make_run_id, results_to_csv
 from common.prompts import generate_batch_prompts, generate_prompt
 
 logger = logging.getLogger("run_transformers")
@@ -74,10 +74,10 @@ def load_model_and_tokenizer(cfg):
 
 
 def single_generate(model, tokenizer, prompt, max_new_tokens, temperature=0.0):
-    """单请求流式生成，测量 TTFT 和 TPS。
+    """单请求流式生成，测量 TTFT / ITL / TPOT / E2EL / TPS。
 
     使用 TextIteratorStreamer 在后台线程中运行 model.generate()，
-    记录首 token 时间和总时间。
+    逐 token 记录时间戳，计算 TTFT、ITL、TPOT、E2EL。
 
     Args:
         model: 已加载的模型。
@@ -87,7 +87,8 @@ def single_generate(model, tokenizer, prompt, max_new_tokens, temperature=0.0):
         temperature: 采样温度，0.0 表示贪心解码。
 
     Returns:
-        dict: ttft_ms, total_tokens, total_time_s, tps, text
+        dict: ttft_ms, itl_ms (list), tpot_ms, e2el_ms,
+              total_tokens, total_time_s, tps, text
     """
     inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
     streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
@@ -102,6 +103,8 @@ def single_generate(model, tokenizer, prompt, max_new_tokens, temperature=0.0):
 
     start_time = time.monotonic()
     first_token_time = None
+    most_recent_timestamp = start_time
+    itl_ms: list[float] = []
     output_text = ""
 
     # 在后台线程中运行 generate
@@ -109,8 +112,12 @@ def single_generate(model, tokenizer, prompt, max_new_tokens, temperature=0.0):
     thread.start()
 
     for token_text in streamer:
+        timestamp = time.monotonic()
         if first_token_time is None:
-            first_token_time = time.monotonic()
+            first_token_time = timestamp
+        else:
+            itl_ms.append((timestamp - most_recent_timestamp) * 1000.0)
+        most_recent_timestamp = timestamp
         output_text += token_text
 
     thread.join()
@@ -118,11 +125,22 @@ def single_generate(model, tokenizer, prompt, max_new_tokens, temperature=0.0):
 
     ttft_ms = (first_token_time - start_time) * 1000.0 if first_token_time else 0.0
     total_time_s = end_time - start_time
+    e2el_ms = total_time_s * 1000.0
     total_tokens = len(tokenizer.encode(output_text, add_special_tokens=False))
+
+    # TPOT = (E2EL - TTFT) / (output_tokens - 1)
+    if total_tokens > 1 and first_token_time:
+        tpot_ms = (end_time - first_token_time) * 1000.0 / (total_tokens - 1)
+    else:
+        tpot_ms = e2el_ms if total_tokens == 1 else 0.0
+
     tps = total_tokens / total_time_s if total_time_s > 0 else 0.0
 
     return {
         "ttft_ms": ttft_ms,
+        "itl_ms": itl_ms,
+        "tpot_ms": tpot_ms,
+        "e2el_ms": e2el_ms,
         "total_tokens": total_tokens,
         "total_time_s": total_time_s,
         "tps": tps,
@@ -140,6 +158,8 @@ def batch_generate(model, tokenizer, prompts, max_new_tokens, temperature=0.0):
 
     NOTE: 批量生成无法精确测量每个请求的 TTFT，因此使用
     total_time_s / batch_size 作为 TTFT 的估计值。
+    由于无流式，无法测量逐 token ITL，返回 mean_itl_ms=-1。
+    TPOT 从总时间估算。
 
     Args:
         model: 已加载的模型。
@@ -149,7 +169,8 @@ def batch_generate(model, tokenizer, prompts, max_new_tokens, temperature=0.0):
         temperature: 采样温度，0.0 表示贪心解码。
 
     Returns:
-        dict: mean_ttft_ms, total_tokens, concurrent_tps, total_time_s
+        dict: mean_ttft_ms, mean_itl_ms, mean_tpot_ms, e2el_ms,
+              total_tokens, concurrent_tps, total_time_s
     """
     inputs = tokenizer(
         prompts,
@@ -173,6 +194,7 @@ def batch_generate(model, tokenizer, prompts, max_new_tokens, temperature=0.0):
     end_time = time.monotonic()
 
     total_time_s = end_time - start_time
+    e2el_ms = total_time_s * 1000.0
     input_lengths = inputs["attention_mask"].sum(dim=1).tolist()
     total_tokens = sum(
         len(outputs[i]) - input_lengths[i] for i in range(len(prompts))
@@ -180,8 +202,18 @@ def batch_generate(model, tokenizer, prompts, max_new_tokens, temperature=0.0):
     concurrent_tps = total_tokens / total_time_s if total_time_s > 0 else 0.0
     mean_ttft_ms = total_time_s * 1000.0 / len(prompts)  # estimate
 
+    # ITL: 无法测量（无流式）
+    mean_itl_ms = -1.0
+
+    # TPOT: 估算 = (total_time - estimated_ttft_per_req) / (tokens_per_req - 1)
+    # 简化：用 overall TPOT = e2el / total_tokens (粗估)
+    mean_tpot_ms = e2el_ms / total_tokens if total_tokens > 0 else 0.0
+
     return {
         "mean_ttft_ms": mean_ttft_ms,
+        "mean_itl_ms": mean_itl_ms,
+        "mean_tpot_ms": mean_tpot_ms,
+        "e2el_ms": e2el_ms,
         "total_tokens": total_tokens,
         "concurrent_tps": concurrent_tps,
         "total_time_s": total_time_s,
@@ -224,22 +256,32 @@ def run_single_request_tests(model, tokenizer, cfg, run_id, gpu_monitor):
         for _ in range(sr_cfg.num_warmup):
             single_generate(model, tokenizer, prompt, sr_cfg.max_new_tokens)
 
-        # Benchmark runs
+        # Benchmark runs — 采集 TTFT / ITL / TPOT / E2EL / TPS
         ttfts = []
         tps_list = []
+        itl_list = []
+        tpot_list = []
+        e2el_list = []
         gpu_monitor.start(reset_baseline=False)
 
         for _ in range(sr_cfg.num_runs):
             res = single_generate(model, tokenizer, prompt, sr_cfg.max_new_tokens)
             ttfts.append(res["ttft_ms"])
             tps_list.append(res["tps"])
+            itl_list.append(res["itl_ms"])
+            tpot_list.append(res["tpot_ms"])
+            e2el_list.append(res["e2el_ms"])
 
         gpu_monitor.stop()
 
-        avg_ttft = sum(ttfts) / len(ttfts) if ttfts else 0.0
+        # ITL: 所有 run 中所有 token 间隔合并后再统计
+        all_itls = [itl for itls in itl_list for itl in itls]
+        ttft_stats = compute_percentile_stats(ttfts)
+        itl_stats = compute_percentile_stats(all_itls)
+        tpot_stats = compute_percentile_stats(tpot_list)
+        e2el_stats = compute_percentile_stats(e2el_list)
         avg_tps = sum(tps_list) / len(tps_list) if tps_list else 0.0
         peak_vram = gpu_monitor.peak_vram_mb
-
         peak_vram_abs = gpu_monitor.peak_vram_abs_mb
 
         results.append(
@@ -249,23 +291,37 @@ def run_single_request_tests(model, tokenizer, cfg, run_id, gpu_monitor):
                 batch_size=1,
                 prompt_tokens=prompt_len,
                 max_new_tokens=sr_cfg.max_new_tokens,
-                ttft_ms=round(avg_ttft, 2),
+                ttft_ms=round(ttft_stats["mean"], 2),
+                median_ttft_ms=round(ttft_stats["median"], 2),
+                p90_ttft_ms=round(ttft_stats["p90"], 2),
+                p99_ttft_ms=round(ttft_stats["p99"], 2),
                 mean_tps=round(avg_tps, 2),
+                mean_itl_ms=round(itl_stats["mean"], 2),
+                median_itl_ms=round(itl_stats["median"], 2),
+                p90_itl_ms=round(itl_stats["p90"], 2),
+                p99_itl_ms=round(itl_stats["p99"], 2),
+                mean_tpot_ms=round(tpot_stats["mean"], 2),
+                median_tpot_ms=round(tpot_stats["median"], 2),
+                p90_tpot_ms=round(tpot_stats["p90"], 2),
+                p99_tpot_ms=round(tpot_stats["p99"], 2),
+                e2el_ms=round(e2el_stats["mean"], 2),
+                median_e2el_ms=round(e2el_stats["median"], 2),
+                p90_e2el_ms=round(e2el_stats["p90"], 2),
+                p99_e2el_ms=round(e2el_stats["p99"], 2),
                 peak_vram_mb=round(peak_vram, 1),
                 peak_vram_abs_mb=round(peak_vram_abs, 1),
-                kv_cache_usage=-1,  # Not applicable for Transformers
-                num_running_reqs=-1,
-                num_waiting_reqs=-1,
                 run_id=run_id,
                 timestamp=datetime.now().isoformat(),
             )
         )
         logger.info(
-            "[single] prompt_length=%d => avg_ttft=%.2f ms, avg_tps=%.2f tok/s, peak_vram=%.1f MB, abs=%.1f MB",
+            "[single] prompt_length=%d => ttft=%.2f ms (p99=%.2f), tps=%.2f tok/s, itl=%.2f ms (p99=%.2f), tpot=%.2f ms, e2el=%.2f ms",
             prompt_len,
-            avg_ttft,
+            ttft_stats["mean"], ttft_stats["p99"],
             avg_tps,
-            peak_vram, peak_vram_abs,
+            itl_stats["mean"], itl_stats["p99"],
+            tpot_stats["mean"],
+            e2el_stats["mean"],
         )
 
     return results
@@ -312,22 +368,30 @@ def run_concurrent_tests(model, tokenizer, cfg, run_id, gpu_monitor):
         for _ in range(cc_cfg.num_warmup):
             batch_generate(model, tokenizer, prompts, cc_cfg.max_new_tokens)
 
-        # Benchmark runs
+        # Benchmark runs — 采集 TTFT / ITL / TPOT / E2EL / TPS
         ttfts = []
         tps_list = []
+        itl_list = []
+        tpot_list = []
+        e2el_list = []
         gpu_monitor.start(reset_baseline=False)
 
         for _ in range(cc_cfg.num_runs):
             res = batch_generate(model, tokenizer, prompts, cc_cfg.max_new_tokens)
             ttfts.append(res["mean_ttft_ms"])
             tps_list.append(res["concurrent_tps"])
+            itl_list.append(res["mean_itl_ms"])
+            tpot_list.append(res["mean_tpot_ms"])
+            e2el_list.append(res["e2el_ms"])
 
         gpu_monitor.stop()
 
-        avg_ttft = sum(ttfts) / len(ttfts) if ttfts else 0.0
+        ttft_stats = compute_percentile_stats(ttfts)
+        itl_stats = compute_percentile_stats(itl_list)    # -1.0 哨兵自动传播
+        tpot_stats = compute_percentile_stats(tpot_list)
+        e2el_stats = compute_percentile_stats(e2el_list)
         avg_tps = sum(tps_list) / len(tps_list) if tps_list else 0.0
         peak_vram = gpu_monitor.peak_vram_mb
-
         peak_vram_abs = gpu_monitor.peak_vram_abs_mb
 
         results.append(
@@ -337,23 +401,37 @@ def run_concurrent_tests(model, tokenizer, cfg, run_id, gpu_monitor):
                 batch_size=batch_size,
                 prompt_tokens=cc_cfg.prompt_length,
                 max_new_tokens=cc_cfg.max_new_tokens,
-                ttft_ms=round(avg_ttft, 2),
+                ttft_ms=round(ttft_stats["mean"], 2),
+                median_ttft_ms=round(ttft_stats["median"], 2),
+                p90_ttft_ms=round(ttft_stats["p90"], 2),
+                p99_ttft_ms=round(ttft_stats["p99"], 2),
                 mean_tps=round(avg_tps, 2),
+                mean_itl_ms=round(itl_stats["mean"], 2),
+                median_itl_ms=round(itl_stats["median"], 2),
+                p90_itl_ms=round(itl_stats["p90"], 2),
+                p99_itl_ms=round(itl_stats["p99"], 2),
+                mean_tpot_ms=round(tpot_stats["mean"], 2),
+                median_tpot_ms=round(tpot_stats["median"], 2),
+                p90_tpot_ms=round(tpot_stats["p90"], 2),
+                p99_tpot_ms=round(tpot_stats["p99"], 2),
+                e2el_ms=round(e2el_stats["mean"], 2),
+                median_e2el_ms=round(e2el_stats["median"], 2),
+                p90_e2el_ms=round(e2el_stats["p90"], 2),
+                p99_e2el_ms=round(e2el_stats["p99"], 2),
                 peak_vram_mb=round(peak_vram, 1),
                 peak_vram_abs_mb=round(peak_vram_abs, 1),
-                kv_cache_usage=-1,  # Not applicable for Transformers
-                num_running_reqs=-1,
-                num_waiting_reqs=-1,
                 run_id=run_id,
                 timestamp=datetime.now().isoformat(),
             )
         )
         logger.info(
-            "[concurrent] batch_size=%d => avg_ttft=%.2f ms, avg_tps=%.2f tok/s, peak_vram=%.1f MB, abs=%.1f MB",
+            "[concurrent] batch_size=%d => ttft=%.2f ms (p99=%.2f), tps=%.2f tok/s, itl=%.2f ms, tpot=%.2f ms, e2el=%.2f ms",
             batch_size,
-            avg_ttft,
+            ttft_stats["mean"], ttft_stats["p99"],
             avg_tps,
-            peak_vram, peak_vram_abs,
+            itl_stats["mean"],
+            tpot_stats["mean"],
+            e2el_stats["mean"],
         )
 
     return results

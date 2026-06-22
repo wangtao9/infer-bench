@@ -18,9 +18,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from common.client import concurrent_stream_requests, wait_for_server
 from common.config import load_config
-from common.engine_metrics import fetch_engine_metrics
 from common.gpu import GPUMonitor
-from common.metrics import BenchmarkResult, make_run_id, results_to_csv
+from common.metrics import BenchmarkResult, compute_percentile_stats, make_run_id, results_to_csv
 from common.prompts import generate_batch_prompts
 
 logger = logging.getLogger("run_sweep")
@@ -215,6 +214,12 @@ async def sweep_http_engine(engine: str, cfg, run_id: str) -> list[BenchmarkResu
                 )
                 gpu_monitor.stop()
 
+                # 逐请求数据计算百分位统计（修复之前 mean-of-means 问题）
+                ttft_stats = compute_percentile_stats(res["all_ttfts_ms"])
+                itl_stats = compute_percentile_stats(res["all_itls_ms"])
+                tpot_stats = compute_percentile_stats(res["all_tpots_ms"])
+                e2el_stats = compute_percentile_stats(res["all_e2els_ms"])
+
                 results.append(
                     BenchmarkResult(
                         engine=engine,
@@ -222,48 +227,38 @@ async def sweep_http_engine(engine: str, cfg, run_id: str) -> list[BenchmarkResu
                         batch_size=batch_size,
                         prompt_tokens=sw_cfg.prompt_length,
                         max_new_tokens=sw_cfg.max_new_tokens,
-                        ttft_ms=round(res["mean_ttft_ms"], 2),
+                        ttft_ms=round(ttft_stats["mean"], 2),
+                        median_ttft_ms=round(ttft_stats["median"], 2),
+                        p90_ttft_ms=round(ttft_stats["p90"], 2),
+                        p99_ttft_ms=round(ttft_stats["p99"], 2),
                         mean_tps=round(res["concurrent_tps"], 2),
+                        mean_itl_ms=round(itl_stats["mean"], 2),
+                        median_itl_ms=round(itl_stats["median"], 2),
+                        p90_itl_ms=round(itl_stats["p90"], 2),
+                        p99_itl_ms=round(itl_stats["p99"], 2),
+                        mean_tpot_ms=round(tpot_stats["mean"], 2),
+                        median_tpot_ms=round(tpot_stats["median"], 2),
+                        p90_tpot_ms=round(tpot_stats["p90"], 2),
+                        p99_tpot_ms=round(tpot_stats["p99"], 2),
+                        e2el_ms=round(e2el_stats["mean"], 2),
+                        median_e2el_ms=round(e2el_stats["median"], 2),
+                        p90_e2el_ms=round(e2el_stats["p90"], 2),
+                        p99_e2el_ms=round(e2el_stats["p99"], 2),
                         peak_vram_mb=round(gpu_monitor.peak_vram_mb, 1),
                         peak_vram_abs_mb=round(gpu_monitor.peak_vram_abs_mb, 1),
-                        kv_cache_usage=-1,
-                        num_running_reqs=-1,
-                        num_waiting_reqs=-1,
                         run_id=run_id,
                         timestamp=datetime.now().isoformat(),
                     )
                 )
-                # Fetch engine internal metrics from /metrics endpoint
-                engine_m = await fetch_engine_metrics(base_url, engine)
-                kv_pct = engine_m.get("kv_cache_usage", -1) * 100 if engine_m.get("kv_cache_usage", -1) >= 0 else -1
-                # Update the last result with engine metrics
-                if engine_m:
-                    last = results[-1]
-                    results[-1] = BenchmarkResult(
-                        engine=last.engine,
-                        test_type=last.test_type,
-                        batch_size=last.batch_size,
-                        prompt_tokens=last.prompt_tokens,
-                        max_new_tokens=last.max_new_tokens,
-                        ttft_ms=last.ttft_ms,
-                        mean_tps=last.mean_tps,
-                        peak_vram_mb=last.peak_vram_mb,
-                        peak_vram_abs_mb=last.peak_vram_abs_mb,
-                        kv_cache_usage=engine_m.get("kv_cache_usage", -1),
-                        num_running_reqs=int(engine_m.get("num_running_reqs", -1)),
-                        num_waiting_reqs=int(engine_m.get("num_waiting_reqs", -1)),
-                        run_id=last.run_id,
-                        timestamp=last.timestamp,
-                    )
                 logger.info(
-                    "[%s sweep] concurrency=%d => ttft=%.2f ms, tps=%.2f tok/s, kv=%.1f%%, running=%d, waiting=%d",
+                    "[%s sweep] concurrency=%d => ttft=%.2f ms (p99=%.2f), tps=%.2f tok/s, itl=%.2f ms (p99=%.2f), tpot=%.2f ms, e2el=%.2f ms",
                     engine,
                     batch_size,
-                    res["mean_ttft_ms"],
+                    ttft_stats["mean"], ttft_stats["p99"],
                     res["concurrent_tps"],
-                    kv_pct,
-                    int(engine_m.get("num_running_reqs", -1)),
-                    int(engine_m.get("num_waiting_reqs", -1)),
+                    itl_stats["mean"], itl_stats["p99"],
+                    tpot_stats["mean"],
+                    e2el_stats["mean"],
                 )
 
             except Exception as e:
@@ -279,12 +274,24 @@ async def sweep_http_engine(engine: str, cfg, run_id: str) -> list[BenchmarkResu
                         prompt_tokens=sw_cfg.prompt_length,
                         max_new_tokens=sw_cfg.max_new_tokens,
                         ttft_ms=-1,
+                        median_ttft_ms=-1.0,
+                        p90_ttft_ms=-1.0,
+                        p99_ttft_ms=-1.0,
                         mean_tps=-1,
+                        mean_itl_ms=-1.0,
+                        median_itl_ms=-1.0,
+                        p90_itl_ms=-1.0,
+                        p99_itl_ms=-1.0,
+                        mean_tpot_ms=-1.0,
+                        median_tpot_ms=-1.0,
+                        p90_tpot_ms=-1.0,
+                        p99_tpot_ms=-1.0,
+                        e2el_ms=-1.0,
+                        median_e2el_ms=-1.0,
+                        p90_e2el_ms=-1.0,
+                        p99_e2el_ms=-1.0,
                         peak_vram_mb=-1,
                         peak_vram_abs_mb=-1,
-                        kv_cache_usage=-1,
-                        num_running_reqs=-1,
-                        num_waiting_reqs=-1,
                         run_id=run_id,
                         timestamp=datetime.now().isoformat(),
                     )
@@ -385,12 +392,24 @@ def sweep_transformers(cfg, run_id: str) -> list[BenchmarkResult]:
             gpu_monitor.stop()
 
             total_time_s = end_time - start_time
+            e2el_ms = total_time_s * 1000.0
             input_lengths = all_inputs["attention_mask"].sum(dim=1).tolist()
             total_tokens = sum(len(outputs[i]) - input_lengths[i] for i in range(len(prompts)))
             concurrent_tps = total_tokens / total_time_s if total_time_s > 0 else 0.0
             mean_ttft_ms = total_time_s * 1000.0 / len(prompts)  # estimate
+            # ITL: 无法测量（批量生成无流式）→ -1.0 哨兵
+            mean_itl_ms = -1.0
+            # TPOT: 估算 = e2el / total_tokens
+            mean_tpot_ms = e2el_ms / total_tokens if total_tokens > 0 else 0.0
             peak_vram = gpu_monitor.peak_vram_mb
             peak_vram_abs = gpu_monitor.peak_vram_abs_mb
+
+            # Transformers 批量模式：单次运行，百分位即自身
+            # ITL 为 -1.0 哨兵，compute_percentile_stats 正确传播
+            ttft_stats = compute_percentile_stats([mean_ttft_ms])
+            itl_stats = compute_percentile_stats([mean_itl_ms])   # → 全 -1.0
+            tpot_stats = compute_percentile_stats([mean_tpot_ms])
+            e2el_stats = compute_percentile_stats([e2el_ms])
 
             results.append(
                 BenchmarkResult(
@@ -399,23 +418,36 @@ def sweep_transformers(cfg, run_id: str) -> list[BenchmarkResult]:
                     batch_size=batch_size,
                     prompt_tokens=sw_cfg.prompt_length,
                     max_new_tokens=sw_cfg.max_new_tokens,
-                    ttft_ms=round(mean_ttft_ms, 2),
+                    ttft_ms=round(ttft_stats["mean"], 2),
+                    median_ttft_ms=round(ttft_stats["median"], 2),
+                    p90_ttft_ms=round(ttft_stats["p90"], 2),
+                    p99_ttft_ms=round(ttft_stats["p99"], 2),
                     mean_tps=round(concurrent_tps, 2),
+                    mean_itl_ms=round(itl_stats["mean"], 2),
+                    median_itl_ms=round(itl_stats["median"], 2),
+                    p90_itl_ms=round(itl_stats["p90"], 2),
+                    p99_itl_ms=round(itl_stats["p99"], 2),
+                    mean_tpot_ms=round(tpot_stats["mean"], 2),
+                    median_tpot_ms=round(tpot_stats["median"], 2),
+                    p90_tpot_ms=round(tpot_stats["p90"], 2),
+                    p99_tpot_ms=round(tpot_stats["p99"], 2),
+                    e2el_ms=round(e2el_stats["mean"], 2),
+                    median_e2el_ms=round(e2el_stats["median"], 2),
+                    p90_e2el_ms=round(e2el_stats["p90"], 2),
+                    p99_e2el_ms=round(e2el_stats["p99"], 2),
                     peak_vram_mb=round(peak_vram, 1),
                     peak_vram_abs_mb=round(peak_vram_abs, 1),
-                    kv_cache_usage=-1,  # Not applicable for Transformers
-                    num_running_reqs=-1,
-                    num_waiting_reqs=-1,
                     run_id=run_id,
                     timestamp=datetime.now().isoformat(),
                 )
             )
             logger.info(
-                "[transformers sweep] batch_size=%d => ttft=%.2f ms, tps=%.2f tok/s, vram=%.1f MB, abs=%.1f MB",
+                "[transformers sweep] batch_size=%d => ttft=%.2f ms, tps=%.2f tok/s, itl=N/A, tpot=%.2f ms, e2el=%.2f ms",
                 batch_size,
                 mean_ttft_ms,
                 concurrent_tps,
-                peak_vram, peak_vram_abs,
+                mean_tpot_ms,
+                e2el_ms,
             )
 
         except Exception as e:
@@ -426,20 +458,35 @@ def sweep_transformers(cfg, run_id: str) -> list[BenchmarkResult]:
             )
             gpu_monitor.stop()
             results.append(
-                BenchmarkResult(
-                    engine="transformers",
-                    test_type="sweep",
-                    batch_size=batch_size,
-                    prompt_tokens=sw_cfg.prompt_length,
-                    max_new_tokens=sw_cfg.max_new_tokens,
-                    ttft_ms=-1,
-                    mean_tps=-1,
-                    peak_vram_mb=-1,
-                    peak_vram_abs_mb=-1,
-                    run_id=run_id,
-                    timestamp=datetime.now().isoformat(),
+                    BenchmarkResult(
+                        engine="transformers",
+                        test_type="sweep",
+                        batch_size=batch_size,
+                        prompt_tokens=sw_cfg.prompt_length,
+                        max_new_tokens=sw_cfg.max_new_tokens,
+                        ttft_ms=-1,
+                        median_ttft_ms=-1.0,
+                        p90_ttft_ms=-1.0,
+                        p99_ttft_ms=-1.0,
+                        mean_tps=-1,
+                        mean_itl_ms=-1.0,
+                        median_itl_ms=-1.0,
+                        p90_itl_ms=-1.0,
+                        p99_itl_ms=-1.0,
+                        mean_tpot_ms=-1.0,
+                        median_tpot_ms=-1.0,
+                        p90_tpot_ms=-1.0,
+                        p99_tpot_ms=-1.0,
+                        e2el_ms=-1.0,
+                        median_e2el_ms=-1.0,
+                        p90_e2el_ms=-1.0,
+                        p99_e2el_ms=-1.0,
+                        peak_vram_mb=-1,
+                        peak_vram_abs_mb=-1,
+                        run_id=run_id,
+                        timestamp=datetime.now().isoformat(),
+                    )
                 )
-            )
 
         # Brief pause between levels
         time.sleep(3)

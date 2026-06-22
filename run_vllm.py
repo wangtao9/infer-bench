@@ -15,9 +15,8 @@ from datetime import datetime
 
 from common.client import concurrent_stream_requests, stream_request, wait_for_server
 from common.config import load_config
-from common.engine_metrics import fetch_engine_metrics
 from common.gpu import GPUMonitor
-from common.metrics import BenchmarkResult, make_run_id, results_to_csv
+from common.metrics import BenchmarkResult, compute_percentile_stats, make_run_id, results_to_csv
 from common.prompts import generate_batch_prompts, generate_prompt
 from transformers import AutoTokenizer
 
@@ -122,9 +121,12 @@ async def run_single_request_tests(
                 base_url, prompt, model, max_tokens=sr_cfg.max_new_tokens
             )
 
-        # Benchmark runs
+        # Benchmark runs — 采集 TTFT / ITL / TPOT / E2EL / TPS
         ttfts = []
         tps_list = []
+        itl_list = []
+        tpot_list = []
+        e2el_list = []
         gpu_monitor.start(reset_baseline=False)
 
         for _ in range(sr_cfg.num_runs):
@@ -133,19 +135,21 @@ async def run_single_request_tests(
             )
             ttfts.append(res["ttft_ms"])
             tps_list.append(res["tps"])
+            itl_list.append(res["itl_ms"])
+            tpot_list.append(res["tpot_ms"])
+            e2el_list.append(res["e2el_ms"])
 
         gpu_monitor.stop()
 
-        avg_ttft = sum(ttfts) / len(ttfts) if ttfts else 0.0
+        # ITL: 所有 run 中所有 token 间隔合并后再统计
+        all_itls = [itl for itls in itl_list for itl in itls]
+        ttft_stats = compute_percentile_stats(ttfts)
+        itl_stats = compute_percentile_stats(all_itls)
+        tpot_stats = compute_percentile_stats(tpot_list)
+        e2el_stats = compute_percentile_stats(e2el_list)
         avg_tps = sum(tps_list) / len(tps_list) if tps_list else 0.0
         peak_vram = gpu_monitor.peak_vram_mb
         peak_vram_abs = gpu_monitor.peak_vram_abs_mb
-
-        # 从 /metrics 端点抓取引擎内部指标
-        engine_metrics = await fetch_engine_metrics(base_url, "vllm")
-        kv_usage = engine_metrics.get("kv_cache_usage", -1)
-        num_running = int(engine_metrics.get("num_running_reqs", -1))
-        num_waiting = int(engine_metrics.get("num_waiting_reqs", -1))
 
         results.append(
             BenchmarkResult(
@@ -154,25 +158,37 @@ async def run_single_request_tests(
                 batch_size=1,
                 prompt_tokens=prompt_len,
                 max_new_tokens=sr_cfg.max_new_tokens,
-                ttft_ms=round(avg_ttft, 2),
+                ttft_ms=round(ttft_stats["mean"], 2),
+                median_ttft_ms=round(ttft_stats["median"], 2),
+                p90_ttft_ms=round(ttft_stats["p90"], 2),
+                p99_ttft_ms=round(ttft_stats["p99"], 2),
                 mean_tps=round(avg_tps, 2),
+                mean_itl_ms=round(itl_stats["mean"], 2),
+                median_itl_ms=round(itl_stats["median"], 2),
+                p90_itl_ms=round(itl_stats["p90"], 2),
+                p99_itl_ms=round(itl_stats["p99"], 2),
+                mean_tpot_ms=round(tpot_stats["mean"], 2),
+                median_tpot_ms=round(tpot_stats["median"], 2),
+                p90_tpot_ms=round(tpot_stats["p90"], 2),
+                p99_tpot_ms=round(tpot_stats["p99"], 2),
+                e2el_ms=round(e2el_stats["mean"], 2),
+                median_e2el_ms=round(e2el_stats["median"], 2),
+                p90_e2el_ms=round(e2el_stats["p90"], 2),
+                p99_e2el_ms=round(e2el_stats["p99"], 2),
                 peak_vram_mb=round(peak_vram, 1),
                 peak_vram_abs_mb=round(peak_vram_abs, 1),
-                kv_cache_usage=kv_usage,
-                num_running_reqs=num_running,
-                num_waiting_reqs=num_waiting,
                 run_id=run_id,
                 timestamp=datetime.now().isoformat(),
             )
         )
         logger.info(
-            "[single] prompt_length=%d => avg_ttft=%.2f ms, avg_tps=%.2f tok/s, kv=%.1f%%, running=%d, waiting=%d",
+            "[single] prompt_length=%d => ttft=%.2f ms (p99=%.2f), tps=%.2f, itl=%.2f ms (p99=%.2f), tpot=%.2f ms, e2el=%.2f ms",
             prompt_len,
-            avg_ttft,
+            ttft_stats["mean"], ttft_stats["p99"],
             avg_tps,
-            kv_usage * 100 if kv_usage >= 0 else -1,
-            num_running,
-            num_waiting,
+            itl_stats["mean"], itl_stats["p99"],
+            tpot_stats["mean"],
+            e2el_stats["mean"],
         )
 
     return results
@@ -212,8 +228,12 @@ async def run_concurrent_tests(
                 base_url, prompts, model, max_tokens=cc_cfg.max_new_tokens
             )
 
-        # Benchmark runs
-        ttfts = []
+        # Benchmark runs — 采集 TTFT / ITL / TPOT / E2EL / TPS
+        # 合并所有 run 的逐请求数据（修复之前 mean-of-means 的问题）
+        all_ttfts: list[float] = []
+        all_itls: list[float] = []
+        all_tpots: list[float] = []
+        all_e2els: list[float] = []
         tps_list = []
         gpu_monitor.start(reset_baseline=False)
 
@@ -221,21 +241,21 @@ async def run_concurrent_tests(
             res = await concurrent_stream_requests(
                 base_url, prompts, model, max_tokens=cc_cfg.max_new_tokens
             )
-            ttfts.append(res["mean_ttft_ms"])
+            all_ttfts.extend(res["all_ttfts_ms"])
+            all_itls.extend(res["all_itls_ms"])
+            all_tpots.extend(res["all_tpots_ms"])
+            all_e2els.extend(res["all_e2els_ms"])
             tps_list.append(res["concurrent_tps"])
 
         gpu_monitor.stop()
 
-        avg_ttft = sum(ttfts) / len(ttfts) if ttfts else 0.0
+        ttft_stats = compute_percentile_stats(all_ttfts)
+        itl_stats = compute_percentile_stats(all_itls)
+        tpot_stats = compute_percentile_stats(all_tpots)
+        e2el_stats = compute_percentile_stats(all_e2els)
         avg_tps = sum(tps_list) / len(tps_list) if tps_list else 0.0
         peak_vram = gpu_monitor.peak_vram_mb
         peak_vram_abs = gpu_monitor.peak_vram_abs_mb
-
-        # 从 /metrics 端点抓取引擎内部指标
-        engine_metrics = await fetch_engine_metrics(base_url, "vllm")
-        kv_usage = engine_metrics.get("kv_cache_usage", -1)
-        num_running = int(engine_metrics.get("num_running_reqs", -1))
-        num_waiting = int(engine_metrics.get("num_waiting_reqs", -1))
 
         results.append(
             BenchmarkResult(
@@ -244,25 +264,37 @@ async def run_concurrent_tests(
                 batch_size=batch_size,
                 prompt_tokens=cc_cfg.prompt_length,
                 max_new_tokens=cc_cfg.max_new_tokens,
-                ttft_ms=round(avg_ttft, 2),
+                ttft_ms=round(ttft_stats["mean"], 2),
+                median_ttft_ms=round(ttft_stats["median"], 2),
+                p90_ttft_ms=round(ttft_stats["p90"], 2),
+                p99_ttft_ms=round(ttft_stats["p99"], 2),
                 mean_tps=round(avg_tps, 2),
+                mean_itl_ms=round(itl_stats["mean"], 2),
+                median_itl_ms=round(itl_stats["median"], 2),
+                p90_itl_ms=round(itl_stats["p90"], 2),
+                p99_itl_ms=round(itl_stats["p99"], 2),
+                mean_tpot_ms=round(tpot_stats["mean"], 2),
+                median_tpot_ms=round(tpot_stats["median"], 2),
+                p90_tpot_ms=round(tpot_stats["p90"], 2),
+                p99_tpot_ms=round(tpot_stats["p99"], 2),
+                e2el_ms=round(e2el_stats["mean"], 2),
+                median_e2el_ms=round(e2el_stats["median"], 2),
+                p90_e2el_ms=round(e2el_stats["p90"], 2),
+                p99_e2el_ms=round(e2el_stats["p99"], 2),
                 peak_vram_mb=round(peak_vram, 1),
                 peak_vram_abs_mb=round(peak_vram_abs, 1),
-                kv_cache_usage=kv_usage,
-                num_running_reqs=num_running,
-                num_waiting_reqs=num_waiting,
                 run_id=run_id,
                 timestamp=datetime.now().isoformat(),
             )
         )
         logger.info(
-            "[concurrent] batch_size=%d => avg_ttft=%.2f ms, avg_tps=%.2f tok/s, kv=%.1f%%, running=%d, waiting=%d",
+            "[concurrent] batch_size=%d => ttft=%.2f ms (p99=%.2f), tps=%.2f tok/s, itl=%.2f ms (p99=%.2f), tpot=%.2f ms, e2el=%.2f ms",
             batch_size,
-            avg_ttft,
+            ttft_stats["mean"], ttft_stats["p99"],
             avg_tps,
-            kv_usage * 100 if kv_usage >= 0 else -1,
-            num_running,
-            num_waiting,
+            itl_stats["mean"], itl_stats["p99"],
+            tpot_stats["mean"],
+            e2el_stats["mean"],
         )
 
     return results
