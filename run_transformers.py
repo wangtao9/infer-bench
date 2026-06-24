@@ -157,7 +157,7 @@ def batch_generate(model, tokenizer, prompts, max_new_tokens, temperature=0.0):
     """批量生成（无流式），测量并发吞吐量。
 
     NOTE: 批量生成无法精确测量每个请求的 TTFT，因此使用
-    total_time_s / batch_size 作为 TTFT 的估计值。
+    total_time_s / len(prompts) 作为 TTFT 的估计值。
     由于无流式，无法测量逐 token ITL，返回 mean_itl_ms=-1。
     TPOT 从总时间估算。
 
@@ -288,7 +288,8 @@ def run_single_request_tests(model, tokenizer, cfg, run_id, gpu_monitor):
             BenchmarkResult(
                 engine="transformers",
                 test_type="single",
-                batch_size=1,
+                num_requests=1,
+                request_rate=float("inf"),
                 prompt_tokens=prompt_len,
                 max_new_tokens=sr_cfg.max_new_tokens,
                 ttft_ms=round(ttft_stats["mean"], 2),
@@ -333,12 +334,15 @@ def run_single_request_tests(model, tokenizer, cfg, run_id, gpu_monitor):
 
 
 def run_concurrent_tests(model, tokenizer, cfg, run_id, gpu_monitor):
-    """对每个 batch_size 执行批量测试。
+    """执行批量并发测试。
 
-    NOTE: 使用 batch_generate() 代替 vLLM/SGLang 的
+    使用 batch_generate() 代替 vLLM/SGLang 的
     concurrent_stream_requests()。批量生成是同步的，
     语义上与 HTTP 并发请求不同——所有 prompt 在同一
     forward pass 中处理，而非独立并发请求。
+
+    NOTE: Transformers 为同步批量处理，仅支持 request_rate=inf（batch），
+    忽略有限 request_rate 值（Poisson 调度不适用于同步批量推理）。
 
     Args:
         model: 已加载的模型。
@@ -352,45 +356,42 @@ def run_concurrent_tests(model, tokenizer, cfg, run_id, gpu_monitor):
     """
     results = []
     cc_cfg = cfg.test.concurrent
+    cc_cfg.validate()
 
-    for batch_size in cc_cfg.batch_sizes:
-        prompts = generate_batch_prompts(
-            batch_size, cc_cfg.prompt_length, tokenizer=tokenizer
-        )
+    num_requests = cc_cfg.num_requests
+    prompts = generate_batch_prompts(
+        num_requests, cc_cfg.prompt_length, tokenizer=tokenizer
+    )
+
+    # Warmup
+    for _ in range(cc_cfg.num_warmup):
+        batch_generate(model, tokenizer, prompts, cc_cfg.max_new_tokens)
+
+    # 仅处理 request_rate=inf 的轮次，跳过有限值（Poisson 不适用于同步批量）
+    for rate in cc_cfg.request_rate:
+        if rate != float("inf"):
+            logger.warning(
+                "Transformers 忽略 request_rate=%s（同步批量处理仅支持 batch 模式）",
+                rate,
+            )
+            continue
+
         logger.info(
-            "[concurrent] batch_size=%d, prompt_length=%d, max_new_tokens=%d",
-            batch_size,
+            "[concurrent] num_requests=%d, prompt_length=%d, max_new_tokens=%d",
+            num_requests,
             cc_cfg.prompt_length,
             cc_cfg.max_new_tokens,
         )
 
-        # Warmup
-        for _ in range(cc_cfg.num_warmup):
-            batch_generate(model, tokenizer, prompts, cc_cfg.max_new_tokens)
-
-        # Benchmark runs — 采集 TTFT / ITL / TPOT / E2EL / TPS
-        ttfts = []
-        tps_list = []
-        itl_list = []
-        tpot_list = []
-        e2el_list = []
+        # 单次运行
         gpu_monitor.start(reset_baseline=False)
-
-        for _ in range(cc_cfg.num_runs):
-            res = batch_generate(model, tokenizer, prompts, cc_cfg.max_new_tokens)
-            ttfts.append(res["mean_ttft_ms"])
-            tps_list.append(res["concurrent_tps"])
-            itl_list.append(res["mean_itl_ms"])
-            tpot_list.append(res["mean_tpot_ms"])
-            e2el_list.append(res["e2el_ms"])
-
+        res = batch_generate(model, tokenizer, prompts, cc_cfg.max_new_tokens)
         gpu_monitor.stop()
 
-        ttft_stats = compute_percentile_stats(ttfts)
-        itl_stats = compute_percentile_stats(itl_list)    # -1.0 哨兵自动传播
-        tpot_stats = compute_percentile_stats(tpot_list)
-        e2el_stats = compute_percentile_stats(e2el_list)
-        avg_tps = sum(tps_list) / len(tps_list) if tps_list else 0.0
+        ttft_stats = compute_percentile_stats([res["mean_ttft_ms"]])
+        itl_stats = compute_percentile_stats([res["mean_itl_ms"]])   # → 全 -1.0
+        tpot_stats = compute_percentile_stats([res["mean_tpot_ms"]])
+        e2el_stats = compute_percentile_stats([res["e2el_ms"]])
         peak_vram = gpu_monitor.peak_vram_mb
         peak_vram_abs = gpu_monitor.peak_vram_abs_mb
 
@@ -398,14 +399,14 @@ def run_concurrent_tests(model, tokenizer, cfg, run_id, gpu_monitor):
             BenchmarkResult(
                 engine="transformers",
                 test_type="concurrent",
-                batch_size=batch_size,
+                num_requests=num_requests,
                 prompt_tokens=cc_cfg.prompt_length,
                 max_new_tokens=cc_cfg.max_new_tokens,
                 ttft_ms=round(ttft_stats["mean"], 2),
                 median_ttft_ms=round(ttft_stats["median"], 2),
                 p90_ttft_ms=round(ttft_stats["p90"], 2),
                 p99_ttft_ms=round(ttft_stats["p99"], 2),
-                mean_tps=round(avg_tps, 2),
+                mean_tps=round(res["concurrent_tps"], 2),
                 mean_itl_ms=round(itl_stats["mean"], 2),
                 median_itl_ms=round(itl_stats["median"], 2),
                 p90_itl_ms=round(itl_stats["p90"], 2),
@@ -420,18 +421,18 @@ def run_concurrent_tests(model, tokenizer, cfg, run_id, gpu_monitor):
                 p99_e2el_ms=round(e2el_stats["p99"], 2),
                 peak_vram_mb=round(peak_vram, 1),
                 peak_vram_abs_mb=round(peak_vram_abs, 1),
+                request_rate=float("inf"),
                 run_id=run_id,
                 timestamp=datetime.now().isoformat(),
             )
         )
         logger.info(
-            "[concurrent] batch_size=%d => ttft=%.2f ms (p99=%.2f), tps=%.2f tok/s, itl=%.2f ms, tpot=%.2f ms, e2el=%.2f ms",
-            batch_size,
-            ttft_stats["mean"], ttft_stats["p99"],
-            avg_tps,
-            itl_stats["mean"],
-            tpot_stats["mean"],
-            e2el_stats["mean"],
+            "[concurrent] num_requests=%d => ttft=%.2f ms, tps=%.2f tok/s, itl=N/A, tpot=%.2f ms, e2el=%.2f ms",
+            num_requests,
+            res["mean_ttft_ms"],
+            res["concurrent_tps"],
+            res["mean_tpot_ms"],
+            res["e2el_ms"],
         )
 
     return results

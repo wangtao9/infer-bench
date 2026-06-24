@@ -58,6 +58,22 @@ def load_results(results_dir: str) -> pd.DataFrame:
 
     df = pd.concat(dfs, ignore_index=True)
 
+    # ── 向后兼容：旧 CSV 的 batch_size 列 → num_requests ──
+    if "batch_size" in df.columns and "num_requests" not in df.columns:
+        df = df.rename(columns={"batch_size": "num_requests"})
+    # ── 旧 CSV 无 request_rate 列，补全为 inf ──
+    if "request_rate" not in df.columns:
+        df["request_rate"] = float("inf")
+    # ── 归一化 request_rate：空值/None → inf ──
+    if "request_rate" in df.columns:
+        df["request_rate"] = df["request_rate"].replace("", float("inf"))
+        df["request_rate"] = df["request_rate"].fillna(float("inf"))
+        # 字符串 "inf" → float inf
+        df["request_rate"] = df["request_rate"].apply(
+            lambda x: float("inf") if str(x).strip().lower() == "inf" else x
+        )
+        df["request_rate"] = pd.to_numeric(df["request_rate"], errors="coerce").fillna(float("inf"))
+
     # 过滤掉 -1 值（失败的测试）
     numeric_cols = ["ttft_ms", "mean_tps", "peak_vram_mb", "peak_vram_abs_mb",
                     "median_itl_ms", "median_e2el_ms"]
@@ -184,12 +200,12 @@ def plot_concurrent_tps(df: pd.DataFrame, output_dir: str) -> None:
     fig, ax = plt.subplots(figsize=(8, 5))
 
     for engine in ["vllm", "sglang", "transformers"]:
-        eng_data = subset[subset["engine"] == engine].sort_values("batch_size")
+        eng_data = subset[subset["engine"] == engine].sort_values("num_requests")
         if eng_data.empty:
             continue
-        grouped = eng_data.groupby("batch_size")["mean_tps"].mean().reset_index()
+        grouped = eng_data.groupby("num_requests")["mean_tps"].mean().reset_index()
         ax.plot(
-            grouped["batch_size"],
+            grouped["num_requests"],
             grouped["mean_tps"],
             marker="o",
             color=ENGINE_COLORS[engine],
@@ -230,12 +246,12 @@ def plot_concurrent_ttft(df: pd.DataFrame, output_dir: str) -> None:
     has_p99 = "p99_ttft_ms" in subset.columns
 
     for engine in ["vllm", "sglang", "transformers"]:
-        eng_data = subset[subset["engine"] == engine].sort_values("batch_size")
+        eng_data = subset[subset["engine"] == engine].sort_values("num_requests")
         if eng_data.empty:
             continue
-        grouped = eng_data.groupby("batch_size")["ttft_ms"].mean().reset_index()
+        grouped = eng_data.groupby("num_requests")["ttft_ms"].mean().reset_index()
         ax.plot(
-            grouped["batch_size"],
+            grouped["num_requests"],
             grouped["ttft_ms"],
             marker="o",
             color=ENGINE_COLORS[engine],
@@ -244,9 +260,9 @@ def plot_concurrent_ttft(df: pd.DataFrame, output_dir: str) -> None:
         )
         # P99 虚线
         if has_p99:
-            grouped_p99 = eng_data.groupby("batch_size")["p99_ttft_ms"].mean().reset_index()
+            grouped_p99 = eng_data.groupby("num_requests")["p99_ttft_ms"].mean().reset_index()
             ax.plot(
-                grouped_p99["batch_size"],
+                grouped_p99["num_requests"],
                 grouped_p99["p99_ttft_ms"],
                 marker="o",
                 color=ENGINE_COLORS[engine],
@@ -291,10 +307,10 @@ def plot_sweep_dual_axis(df: pd.DataFrame, output_dir: str) -> None:
     labels = []
 
     for engine in ["vllm", "sglang", "transformers"]:
-        eng_data = subset[subset["engine"] == engine].sort_values("batch_size")
+        eng_data = subset[subset["engine"] == engine].sort_values("num_requests")
         if eng_data.empty:
             continue
-        grouped = eng_data.groupby("batch_size").agg(
+        grouped = eng_data.groupby("num_requests").agg(
             mean_tps=("mean_tps", "mean"),
             ttft_ms=("ttft_ms", "mean"),
         ).reset_index()
@@ -304,7 +320,7 @@ def plot_sweep_dual_axis(df: pd.DataFrame, output_dir: str) -> None:
 
         # TPS — 左轴实线
         h1, = ax1.plot(
-            grouped["batch_size"],
+            grouped["num_requests"],
             grouped["mean_tps"],
             marker="o",
             color=color,
@@ -317,7 +333,7 @@ def plot_sweep_dual_axis(df: pd.DataFrame, output_dir: str) -> None:
 
         # TTFT — 右轴虚线
         h2, = ax2.plot(
-            grouped["batch_size"],
+            grouped["num_requests"],
             grouped["ttft_ms"],
             marker="s",
             color=color,
@@ -359,20 +375,20 @@ def plot_vram_comparison(df: pd.DataFrame, output_dir: str) -> None:
         print("[SKIP] No concurrent/sweep data for chart 6")
         return
 
-    # 按 engine + batch_size 聚合平均 VRAM
+    # 按 engine + num_requests 聚合平均 VRAM
     # 优先使用 peak_vram_abs_mb（绝对占用量），vLLM/SGLang 预分配引擎下
     # peak_vram_mb（增量）始终为 0，abs 才有意义
     vram_col = "peak_vram_abs_mb" if "peak_vram_abs_mb" in subset.columns else "peak_vram_mb"
     grouped = (
-        subset.groupby(["engine", "batch_size"])[vram_col]
+        subset.groupby(["engine", "num_requests"])[vram_col]
         .mean()
         .reset_index()
     )
 
     engines_present = grouped["engine"].unique().tolist()
-    batch_sizes = sorted(grouped["batch_size"].unique())
+    num_requests_list = sorted(grouped["num_requests"].unique())
 
-    x = np.arange(len(batch_sizes))
+    x = np.arange(len(num_requests_list))
     width = 0.25
 
     fig, ax = plt.subplots(figsize=(10, 5.5))
@@ -382,8 +398,8 @@ def plot_vram_comparison(df: pd.DataFrame, output_dir: str) -> None:
             continue
         eng_data = grouped[grouped["engine"] == engine]
         vram_vals = []
-        for bs in batch_sizes:
-            row = eng_data[eng_data["batch_size"] == bs]
+        for nr in num_requests_list:
+            row = eng_data[eng_data["num_requests"] == nr]
             vram_vals.append(row[vram_col].values[0] if not row.empty else 0)
 
         bars = ax.bar(
@@ -408,7 +424,7 @@ def plot_vram_comparison(df: pd.DataFrame, output_dir: str) -> None:
                 )
 
     ax.set_xticks(x + width)
-    ax.set_xticklabels([str(bs) for bs in batch_sizes])
+    ax.set_xticklabels([str(nr) for nr in num_requests_list])
     ax.set_xlabel("并发数")
     ax.set_ylabel("峰值显存 (MB)")
     ax.set_title("峰值显存 vs 并发数（分组柱状图）")
@@ -481,12 +497,12 @@ def plot_concurrent_tpot(df: pd.DataFrame, output_dir: str) -> None:
     fig, ax = plt.subplots(figsize=(8, 5))
 
     for engine in ["vllm", "sglang", "transformers"]:
-        eng_data = subset[subset["engine"] == engine].sort_values("batch_size")
+        eng_data = subset[subset["engine"] == engine].sort_values("num_requests")
         if eng_data.empty:
             continue
-        grouped = eng_data.groupby("batch_size")["p99_tpot_ms"].mean().reset_index()
+        grouped = eng_data.groupby("num_requests")["p99_tpot_ms"].mean().reset_index()
         ax.plot(
-            grouped["batch_size"],
+            grouped["num_requests"],
             grouped["p99_tpot_ms"],
             marker="o",
             color=ENGINE_COLORS[engine],
@@ -526,12 +542,12 @@ def plot_concurrent_e2el(df: pd.DataFrame, output_dir: str) -> None:
     fig, ax = plt.subplots(figsize=(8, 5))
 
     for engine in ["vllm", "sglang", "transformers"]:
-        eng_data = subset[subset["engine"] == engine].sort_values("batch_size")
+        eng_data = subset[subset["engine"] == engine].sort_values("num_requests")
         if eng_data.empty:
             continue
-        grouped = eng_data.groupby("batch_size")["p99_e2el_ms"].mean().reset_index()
+        grouped = eng_data.groupby("num_requests")["p99_e2el_ms"].mean().reset_index()
         ax.plot(
-            grouped["batch_size"],
+            grouped["num_requests"],
             grouped["p99_e2el_ms"],
             marker="o",
             color=ENGINE_COLORS[engine],
@@ -549,6 +565,118 @@ def plot_concurrent_e2el(df: pd.DataFrame, output_dir: str) -> None:
     fig.tight_layout()
 
     path = os.path.join(output_dir, "10_e2el_vs_concurrency.png")
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    print(f"  saved: {path}")
+
+
+# ── 图表 11: TPS vs Request Rate（Poisson 模式）─────────────────
+
+
+def plot_poisson_tps(df: pd.DataFrame, output_dir: str) -> None:
+    """绘图表 11: TPS vs Request Rate（Poisson 调度并发测试）。
+
+    仅绘制 request_rate 非空的数据行，x 轴为 request_rate (req/s)。
+
+    Args:
+        df: 测试结果 DataFrame。
+        output_dir: 图表输出目录。
+    """
+    subset = df[df["test_type"] == "concurrent"].copy()
+    if subset.empty or "request_rate" not in subset.columns:
+        print("[SKIP] No Poisson data for chart 11")
+        return
+    # 过滤出 request_rate 为有限值（Poisson 模式）的行
+    subset = subset[subset["request_rate"] != float("inf")]
+    if subset.empty:
+        print("[SKIP] No Poisson data for chart 11")
+        return
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+
+    for engine in ["vllm", "sglang", "transformers"]:
+        eng_data = subset[subset["engine"] == engine].sort_values("request_rate")
+        if eng_data.empty:
+            continue
+        grouped = eng_data.groupby("request_rate")["mean_tps"].mean().reset_index()
+        ax.plot(
+            grouped["request_rate"],
+            grouped["mean_tps"],
+            marker="o",
+            color=ENGINE_COLORS[engine],
+            label=ENGINE_LABELS[engine],
+            linewidth=2,
+        )
+
+    ax.set_xlabel("Request Rate (req/s)")
+    ax.set_ylabel("吞吐量 (tokens/s)")
+    ax.set_title("TPS vs Request Rate（Poisson 调度）")
+    ax.legend(title="引擎")
+    fig.tight_layout()
+
+    path = os.path.join(output_dir, "11_tps_vs_request_rate.png")
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    print(f"  saved: {path}")
+
+
+# ── 图表 12: TTFT vs Request Rate（Poisson 模式）────────────────
+
+
+def plot_poisson_ttft(df: pd.DataFrame, output_dir: str) -> None:
+    """绘图表 12: TTFT vs Request Rate（Poisson 调度并发测试）。
+
+    仅绘制 request_rate 非空的数据行，mean 实线 + P99 虚线。
+
+    Args:
+        df: 测试结果 DataFrame。
+        output_dir: 图表输出目录。
+    """
+    subset = df[df["test_type"] == "concurrent"].copy()
+    if subset.empty or "request_rate" not in subset.columns:
+        print("[SKIP] No Poisson data for chart 12")
+        return
+    # 过滤出 request_rate 为有限值（Poisson 模式）的行
+    subset = subset[subset["request_rate"] != float("inf")]
+    if subset.empty:
+        print("[SKIP] No Poisson data for chart 12")
+        return
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    has_p99 = "p99_ttft_ms" in subset.columns
+
+    for engine in ["vllm", "sglang", "transformers"]:
+        eng_data = subset[subset["engine"] == engine].sort_values("request_rate")
+        if eng_data.empty:
+            continue
+        grouped = eng_data.groupby("request_rate")["ttft_ms"].mean().reset_index()
+        ax.plot(
+            grouped["request_rate"],
+            grouped["ttft_ms"],
+            marker="o",
+            color=ENGINE_COLORS[engine],
+            label=ENGINE_LABELS[engine],
+            linewidth=2,
+        )
+        if has_p99:
+            grouped_p99 = eng_data.groupby("request_rate")["p99_ttft_ms"].mean().reset_index()
+            ax.plot(
+                grouped_p99["request_rate"],
+                grouped_p99["p99_ttft_ms"],
+                marker="o",
+                color=ENGINE_COLORS[engine],
+                linestyle="--",
+                linewidth=1.5,
+                alpha=0.7,
+            )
+
+    ax.set_xlabel("Request Rate (req/s)")
+    ax.set_ylabel("TTFT (ms)")
+    ax.set_title("TTFT vs Request Rate（Poisson 调度）— 实线=mean, 虚线=P99")
+    ax.legend(title="引擎")
+    fig.tight_layout()
+
+    path = os.path.join(output_dir, "12_ttft_vs_request_rate.png")
     fig.savefig(path, dpi=150)
     plt.close(fig)
     print(f"  saved: {path}")
@@ -757,8 +885,9 @@ def generate_markdown_report(
     if not concurrent.empty:
         has_p99 = "p99_ttft_ms" in concurrent.columns
         has_e2el = "p99_e2el_ms" in concurrent.columns
-        cols = "| 引擎 | 并发数 | TTFT mean (ms)"
-        sep = "|------|--------|---------------"
+        has_rate = "request_rate" in concurrent.columns
+        cols = "| 引擎 | 请求数 | Request Rate | TTFT mean (ms)"
+        sep = "|------|--------|--------------|---------------"
         if has_p99:
             cols += " | TTFT P99 (ms)"
             sep += "|--------------"
@@ -769,10 +898,16 @@ def generate_markdown_report(
         sep += "|----------------|---------------|"
         lines.append(cols)
         lines.append(sep)
-        for _, row in concurrent.sort_values(["engine", "batch_size"]).iterrows():
+        for _, row in concurrent.sort_values(["engine", "num_requests"]).iterrows():
             eng = ENGINE_LABELS.get(row['engine'], row['engine'])
             vram = row.get("peak_vram_abs_mb", row.get("peak_vram_mb", 0))
-            parts = [eng, str(int(row['batch_size'])), f"{row['ttft_ms']:.2f}"]
+            rate_val = row.get("request_rate", float("inf"))
+            try:
+                rate_f = float(rate_val)
+            except (ValueError, TypeError):
+                rate_f = float("inf")
+            rate_str = "batch (inf)" if rate_f == float("inf") else f"{rate_f:.1f}"
+            parts = [eng, str(int(row['num_requests'])), rate_str, f"{row['ttft_ms']:.2f}"]
             if has_p99:
                 parts.append(f"{row['p99_ttft_ms']:.2f}")
             if has_e2el:
@@ -793,6 +928,15 @@ def generate_markdown_report(
     lines.append("### E2EL P99 vs 并发数\n")
     lines.append("![E2EL P99 vs 并发数](10_e2el_vs_concurrency.png)\n")
 
+    # ── Poisson 模式图表（仅在有数据时展示）──
+    if not concurrent.empty and "request_rate" in concurrent.columns:
+        poisson_data = concurrent[concurrent["request_rate"] != float("inf")]
+        if not poisson_data.empty:
+            lines.append("### TPS vs Request Rate（Poisson 调度）\n")
+            lines.append("![TPS vs Request Rate](11_tps_vs_request_rate.png)\n")
+            lines.append("### TTFT vs Request Rate（Poisson 调度）\n")
+            lines.append("![TTFT vs Request Rate](12_ttft_vs_request_rate.png)\n")
+
     # ── Section 3: 渐进并发扫描 ──
     lines.append("## 3. 渐进并发扫描\n")
     sweep = df[df["test_type"] == "sweep"] if not df.empty else pd.DataFrame()
@@ -811,10 +955,10 @@ def generate_markdown_report(
         sep += "|----------------|---------------|"
         lines.append(cols)
         lines.append(sep)
-        for _, row in sweep.sort_values(["engine", "batch_size"]).iterrows():
+        for _, row in sweep.sort_values(["engine", "num_requests"]).iterrows():
             eng = ENGINE_LABELS.get(row['engine'], row['engine'])
             vram = row.get("peak_vram_abs_mb", row.get("peak_vram_mb", 0))
-            parts = [eng, str(int(row['batch_size'])), f"{row['ttft_ms']:.2f}"]
+            parts = [eng, str(int(row['num_requests'])), f"{row['ttft_ms']:.2f}"]
             if has_p99:
                 parts.append(f"{row['p99_ttft_ms']:.2f}")
             if has_e2el:
@@ -904,6 +1048,8 @@ def main() -> None:
     plot_single_request_itl(df, output_dir)
     plot_concurrent_tpot(df, output_dir)
     plot_concurrent_e2el(df, output_dir)
+    plot_poisson_tps(df, output_dir)
+    plot_poisson_ttft(df, output_dir)
 
     # 生成 Markdown 报告
     print("\nGenerating markdown report...")

@@ -28,10 +28,11 @@ class BenchmarkResult:
     """单次测试结果。"""
     engine: str
     test_type: str          # "single" / "concurrent" / "sweep"
-    batch_size: int
+    num_requests: int
     prompt_tokens: int
     max_new_tokens: int
     ttft_ms: float          # 首 Token 延迟 mean (ms)
+    request_rate: float = float("inf")  # inf=batch（同时发出），有限值=Poisson 调度 (req/s)
     median_ttft_ms: float = 0.0
     p90_ttft_ms: float = 0.0
     p99_ttft_ms: float = 0.0
@@ -147,7 +148,7 @@ def results_to_csv(
     filepath.parent.mkdir(parents=True, exist_ok=True)
 
     fieldnames = [
-        "engine", "test_type", "batch_size", "prompt_tokens",
+        "engine", "test_type", "num_requests", "request_rate", "prompt_tokens",
         "max_new_tokens",
         "ttft_ms", "median_ttft_ms", "p90_ttft_ms", "p99_ttft_ms",
         "mean_tps",
@@ -165,7 +166,8 @@ def results_to_csv(
             writer.writerow({
                 "engine": r.engine,
                 "test_type": r.test_type,
-                "batch_size": r.batch_size,
+                "num_requests": r.num_requests,
+                "request_rate": "inf" if r.request_rate == float("inf") else f"{r.request_rate}",
                 "prompt_tokens": r.prompt_tokens,
                 "max_new_tokens": r.max_new_tokens,
                 "ttft_ms": f"{r.ttft_ms:.2f}",

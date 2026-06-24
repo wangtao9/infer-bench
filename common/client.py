@@ -5,6 +5,7 @@
 - 逐 SSE chunk 记录时间戳，计算 TTFT / ITL / TPOT / E2EL
 - 使用 StreamedResponseHandler 正确处理分块 SSE 流
 - 不依赖 /metrics 端点采集延迟/吞吐指标
+- 支持 Poisson 请求调度（request_rate），模拟真实负载场景
 """
 
 import asyncio
@@ -14,6 +15,7 @@ import logging
 import time
 
 import aiohttp
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +106,7 @@ async def stream_request(
     model: str,
     max_tokens: int = 256,
     temperature: float = 0.0,
+    request_id: int | None = None,
 ) -> dict:
     """发送单个流式请求，逐 chunk 记录时间戳。
 
@@ -127,7 +130,11 @@ async def stream_request(
         "temperature": temperature,
         "stream": True,
         "stream_options": {"include_usage": True},
+        "ignore_eos": True,  # 忽略 EOS，确保输出长度=max_tokens（与 vLLM bench serve 一致）
     }
+
+    logger.info("Sending request | id=%s | prompt_len_chars=%d | prompt=%r",
+                request_id, len(prompt), prompt)
 
     first_token_time = None
     start_time = time.monotonic()
@@ -226,21 +233,52 @@ async def concurrent_stream_requests(
     model: str,
     max_tokens: int = 256,
     temperature: float = 0.0,
+    request_rate: float | None = None,
 ) -> dict:
     """并发发送多个流式请求，采集并发指标。
+
+    Args:
+        base_url: 服务地址。
+        prompts: prompt 列表。
+        model: 模型名。
+        max_tokens: 最大输出 token 数。
+        temperature: 采样温度。
+        request_rate: 请求速率（req/s）。None 或 inf 表示同时发出
+            （默认行为，batch 模式）；有限值表示按 Poisson 过程
+            间隔发送，模拟真实负载。参照 vLLM bench serve 的
+            --request-rate 参数。
 
     Returns:
         dict with:
             mean_ttft_ms, mean_tpot_ms, mean_itl_ms,
+            all_ttfts_ms, all_itls_ms, all_tpots_ms, all_e2els_ms,
             total_tokens, concurrent_tps, total_time_s, results
     """
     start_time = time.monotonic()
 
-    tasks = [
-        stream_request(base_url, prompt, model, max_tokens, temperature)
-        for prompt in prompts
-    ]
-    results = await asyncio.gather(*tasks)
+    if request_rate is not None and request_rate < float("inf") and request_rate > 0:
+        # Poisson 调度：请求按指数分布间隔发出
+        # 参照 vLLM bench serve 的 get_request() 实现
+        tasks = []
+        for i, prompt in enumerate(prompts):
+            # 指数分布间隔：E(1/rate)，均值 = 1/rate 秒
+            delay = np.random.exponential(1.0 / request_rate)
+            await asyncio.sleep(delay)
+            tasks.append(
+                asyncio.create_task(
+                    stream_request(base_url, prompt, model, max_tokens, temperature,
+                                   request_id=i)
+                )
+            )
+        results = await asyncio.gather(*tasks)
+    else:
+        # 同时发出（默认 batch 模式）
+        tasks = [
+            stream_request(base_url, prompt, model, max_tokens, temperature,
+                           request_id=i)
+            for i, prompt in enumerate(prompts)
+        ]
+        results = await asyncio.gather(*tasks)
 
     end_time = time.monotonic()
     total_time_s = end_time - start_time

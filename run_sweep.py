@@ -194,23 +194,23 @@ async def sweep_http_engine(engine: str, cfg, run_id: str) -> list[BenchmarkResu
         concurrency_levels = generate_sweep_concurrency(sw_cfg.start, sw_cfg.stop, sw_cfg.multiplier)
         logger.info("%s sweep concurrency levels: %s", engine, concurrency_levels)
 
-        for batch_size in concurrency_levels:
+        for concurrency in concurrency_levels:
             logger.info(
                 "[%s sweep] concurrency=%d, prompt_length=%d, max_new_tokens=%d",
                 engine,
-                batch_size,
+                concurrency,
                 sw_cfg.prompt_length,
                 sw_cfg.max_new_tokens,
             )
 
             try:
                 prompts = generate_batch_prompts(
-                    batch_size, sw_cfg.prompt_length, tokenizer=tokenizer
+                    concurrency, sw_cfg.prompt_length, tokenizer=tokenizer
                 )
 
                 gpu_monitor.start(reset_baseline=False)
                 res = await concurrent_stream_requests(
-                    base_url, prompts, model, max_tokens=sw_cfg.max_new_tokens
+                    base_url, prompts, model, max_tokens=sw_cfg.max_new_tokens,
                 )
                 gpu_monitor.stop()
 
@@ -224,7 +224,8 @@ async def sweep_http_engine(engine: str, cfg, run_id: str) -> list[BenchmarkResu
                     BenchmarkResult(
                         engine=engine,
                         test_type="sweep",
-                        batch_size=batch_size,
+                        num_requests=concurrency,
+                        request_rate=float("inf"),
                         prompt_tokens=sw_cfg.prompt_length,
                         max_new_tokens=sw_cfg.max_new_tokens,
                         ttft_ms=round(ttft_stats["mean"], 2),
@@ -253,7 +254,7 @@ async def sweep_http_engine(engine: str, cfg, run_id: str) -> list[BenchmarkResu
                 logger.info(
                     "[%s sweep] concurrency=%d => ttft=%.2f ms (p99=%.2f), tps=%.2f tok/s, itl=%.2f ms (p99=%.2f), tpot=%.2f ms, e2el=%.2f ms",
                     engine,
-                    batch_size,
+                    concurrency,
                     ttft_stats["mean"], ttft_stats["p99"],
                     res["concurrent_tps"],
                     itl_stats["mean"], itl_stats["p99"],
@@ -263,14 +264,15 @@ async def sweep_http_engine(engine: str, cfg, run_id: str) -> list[BenchmarkResu
 
             except Exception as e:
                 logger.error(
-                    "[%s sweep] concurrency=%d failed: %s", engine, batch_size, e
+                    "[%s sweep] concurrency=%d failed: %s", engine, concurrency, e
                 )
                 gpu_monitor.stop()
                 results.append(
                     BenchmarkResult(
                         engine=engine,
                         test_type="sweep",
-                        batch_size=batch_size,
+                        num_requests=concurrency,
+                        request_rate=float("inf"),
                         prompt_tokens=sw_cfg.prompt_length,
                         max_new_tokens=sw_cfg.max_new_tokens,
                         ttft_ms=-1,
@@ -362,17 +364,17 @@ def sweep_transformers(cfg, run_id: str) -> list[BenchmarkResult]:
     logger.info("transformers sweep concurrency levels: %s", concurrency_levels)
 
     results = []
-    for batch_size in concurrency_levels:
+    for concurrency in concurrency_levels:
         logger.info(
-            "[transformers sweep] batch_size=%d, prompt_length=%d, max_new_tokens=%d",
-            batch_size,
+            "[transformers sweep] concurrency=%d, prompt_length=%d, max_new_tokens=%d",
+            concurrency,
             sw_cfg.prompt_length,
             sw_cfg.max_new_tokens,
         )
 
         try:
             prompts = generate_batch_prompts(
-                batch_size, sw_cfg.prompt_length, tokenizer=tokenizer
+                concurrency, sw_cfg.prompt_length, tokenizer=tokenizer
             )
 
             all_inputs = tokenizer(
@@ -415,7 +417,8 @@ def sweep_transformers(cfg, run_id: str) -> list[BenchmarkResult]:
                 BenchmarkResult(
                     engine="transformers",
                     test_type="sweep",
-                    batch_size=batch_size,
+                    num_requests=concurrency,
+                    request_rate=float("inf"),
                     prompt_tokens=sw_cfg.prompt_length,
                     max_new_tokens=sw_cfg.max_new_tokens,
                     ttft_ms=round(ttft_stats["mean"], 2),
@@ -442,8 +445,8 @@ def sweep_transformers(cfg, run_id: str) -> list[BenchmarkResult]:
                 )
             )
             logger.info(
-                "[transformers sweep] batch_size=%d => ttft=%.2f ms, tps=%.2f tok/s, itl=N/A, tpot=%.2f ms, e2el=%.2f ms",
-                batch_size,
+                "[transformers sweep] concurrency=%d => ttft=%.2f ms, tps=%.2f tok/s, itl=N/A, tpot=%.2f ms, e2el=%.2f ms",
+                concurrency,
                 mean_ttft_ms,
                 concurrent_tps,
                 mean_tpot_ms,
@@ -452,8 +455,8 @@ def sweep_transformers(cfg, run_id: str) -> list[BenchmarkResult]:
 
         except Exception as e:
             logger.error(
-                "[transformers sweep] batch_size=%d failed (likely OOM): %s",
-                batch_size,
+                "[transformers sweep] concurrency=%d failed (likely OOM): %s",
+                concurrency,
                 e,
             )
             gpu_monitor.stop()
@@ -461,7 +464,8 @@ def sweep_transformers(cfg, run_id: str) -> list[BenchmarkResult]:
                     BenchmarkResult(
                         engine="transformers",
                         test_type="sweep",
-                        batch_size=batch_size,
+                        num_requests=concurrency,
+                        request_rate=float("inf"),
                         prompt_tokens=sw_cfg.prompt_length,
                         max_new_tokens=sw_cfg.max_new_tokens,
                         ttft_ms=-1,

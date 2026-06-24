@@ -1,6 +1,6 @@
 model:
   name: "Qwen/Qwen2.5-7B-Instruct"
-  path: null  # 本地路径，null 则从 HuggingFace 下载
+  path: "/home/wt/models/Qwen2.5-7B-Instruct"  # 本地路径，null则从HuggingFace下载
 
 gpu:
   device: "0"
@@ -14,11 +14,11 @@ test:
     num_runs: 5
 
   concurrent:
-    batch_sizes: [1, 2, 4, 8, 16]
+    num_requests: 64                     # 总请求数（对齐 vLLM --num-prompts）
     prompt_length: 512
     max_new_tokens: 256
     num_warmup: 2
-    num_runs: 3
+    request_rate: [4, 8, inf]                  # inf=batch（同时发出），有限值=Poisson
 
   sweep:
     start: 1
@@ -30,10 +30,10 @@ test:
 engines:
   vllm:
     port: 8000
-    extra_args: "--gpu-memory-utilization 0.9"
+    extra_args: "--gpu-memory-utilization 0.9 --max-model-len 4096"
   sglang:
     port: 8001
-    extra_args: "--mem-fraction-static 0.9"
+    extra_args: "--mem-fraction-static 0.9 --context-length 4096"
   transformers:
     dtype: "float16"
     device_map: "auto"
