@@ -1,6 +1,5 @@
 """配置加载：yaml → dataclass。"""
 
-import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -25,7 +24,7 @@ class SingleRequestConfig:
     prompt_lengths: list[int] = field(default_factory=lambda: [128, 512, 1024])
     max_new_tokens: int = 256
     num_warmup: int = 3
-    num_runs: int = 5
+    num_requests: int = 5
 
 
 @dataclass
@@ -129,31 +128,6 @@ def load_config(path: str | Path = "config.yaml") -> BenchmarkConfig:
     cc_raw = test_raw.get("concurrent", {})
     sw_raw = test_raw.get("sweep", {})
 
-    # ── 向后兼容：batch_sizes → num_requests + request_rate=[inf] ──
-    if "batch_sizes" in cc_raw and "num_requests" not in cc_raw:
-        warnings.warn(
-            "'batch_sizes' 已废弃，请使用 'num_requests' + 'request_rate' 代替",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        bs = cc_raw.pop("batch_sizes")
-        cc_raw["num_requests"] = bs[-1] if isinstance(bs, list) and bs else 16
-        cc_raw["request_rate"] = [float("inf")]
-
-    # ── 向后兼容：num_requests 为列表 → 取最大值 + request_rate=[inf] ──
-    if "num_requests" in cc_raw and isinstance(cc_raw["num_requests"], list):
-        warnings.warn(
-            "num_requests 不再支持列表，已取最大值并设定 request_rate=[inf]",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        cc_raw["num_requests"] = max(cc_raw["num_requests"])
-        cc_raw.setdefault("request_rate", [float("inf")])
-
-    # ── 向后兼容：num_runs 已移除 ──
-    if "num_runs" in cc_raw:
-        cc_raw.pop("num_runs")
-
     # ── 归一化：request_rate 单个 float/int → [float]，字符串 "inf" → inf ──
     if "request_rate" in cc_raw:
         rr = cc_raw["request_rate"]
@@ -173,9 +147,6 @@ def load_config(path: str | Path = "config.yaml") -> BenchmarkConfig:
             cc_raw["request_rate"] = normalized
     else:
         cc_raw.setdefault("request_rate", [float("inf")])
-
-    # ── SweepConfig 忽略已废弃的 request_rate 字段 ──
-    sw_raw.pop("request_rate", None)
 
     return BenchmarkConfig(
         model=ModelConfig(**model_raw),

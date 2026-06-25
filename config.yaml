@@ -11,14 +11,14 @@ test:
     prompt_lengths: [128, 512, 1024]
     max_new_tokens: 256
     num_warmup: 3
-    num_runs: 5
+    num_requests: 10
 
   concurrent:
     num_requests: 64                     # 总请求数（对齐 vLLM --num-prompts）
     prompt_length: 512
     max_new_tokens: 256
-    num_warmup: 2
-    request_rate: [4, 8, inf]                  # inf=batch（同时发出），有限值=Poisson
+    num_warmup: 1
+    request_rate: [4, 8, inf]            # inf=batch（同时发出），有限值=Poisson
 
   sweep:
     start: 1

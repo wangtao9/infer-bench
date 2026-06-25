@@ -58,12 +58,6 @@ def load_results(results_dir: str) -> pd.DataFrame:
 
     df = pd.concat(dfs, ignore_index=True)
 
-    # ── 向后兼容：旧 CSV 的 batch_size 列 → num_requests ──
-    if "batch_size" in df.columns and "num_requests" not in df.columns:
-        df = df.rename(columns={"batch_size": "num_requests"})
-    # ── 旧 CSV 无 request_rate 列，补全为 inf ──
-    if "request_rate" not in df.columns:
-        df["request_rate"] = float("inf")
     # ── 归一化 request_rate：空值/None → inf ──
     if "request_rate" in df.columns:
         df["request_rate"] = df["request_rate"].replace("", float("inf"))

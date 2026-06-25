@@ -122,7 +122,7 @@ async def run_single_request_tests(
         e2el_list = []
         gpu_monitor.start(reset_baseline=False)
 
-        for run_idx in range(sr_cfg.num_runs):
+        for run_idx in range(sr_cfg.num_requests):
             run_prompt = generate_prompt(
                 prompt_len, variant=sr_cfg.num_warmup + run_idx,
                 tokenizer=tokenizer,
@@ -152,7 +152,7 @@ async def run_single_request_tests(
             BenchmarkResult(
                 engine="sglang",
                 test_type="single",
-                num_requests=1,
+                num_requests=sr_cfg.num_requests,
                 request_rate=float("inf"),
                 prompt_tokens=prompt_len,
                 max_new_tokens=sr_cfg.max_new_tokens,
@@ -215,10 +215,14 @@ async def run_concurrent_tests(
         num_requests, cc_cfg.prompt_length, tokenizer=tokenizer
     )
 
-    # Warmup（始终 batch 模式，即 request_rate=inf）
+    # Warmup：使用不同的 prompt 避免正式测量时命中 KV cache
+    warmup_prompts = generate_batch_prompts(
+        num_requests, cc_cfg.prompt_length, tokenizer=tokenizer,
+        variant_offset=100,
+    )
     for _ in range(cc_cfg.num_warmup):
         await concurrent_stream_requests(
-            base_url, prompts, model, max_tokens=cc_cfg.max_new_tokens
+            base_url, warmup_prompts, model, max_tokens=cc_cfg.max_new_tokens
         )
 
     for rate in cc_cfg.request_rate:

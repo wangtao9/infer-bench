@@ -203,6 +203,7 @@ def generate_batch_prompts(
     num_requests: int,
     target_tokens: int,
     tokenizer=None,
+    variant_offset: int = 0,
 ) -> list[str]:
     """生成一批内容各异的 prompt，最大化多样性以减少 KV cache 命中。
 
@@ -216,6 +217,7 @@ def generate_batch_prompts(
         num_requests: 请求总数。
         target_tokens: 每 prompt 的目标 token 数。
         tokenizer: 模型 tokenizer。
+        variant_offset: variant 偏移量，用于 warmup 时生成与正式测试不同的 prompt。
     """
     if tokenizer is None:
         raise ValueError("tokenizer is required for prompt generation")
@@ -249,7 +251,7 @@ def generate_batch_prompts(
         key = f"{pool_idx}_{sk}"
         qi = q_counters[key]
         q_counters[key] = (qi + 1) % len(SEEDS[sk]["questions"])
-        variant = qi + pool_idx * len(SEEDS[sk]["questions"])
+        variant = qi + pool_idx * len(SEEDS[sk]["questions"]) + variant_offset
         prompt = generate_prompt(
             target_tokens, seed=sk, variant=variant, tokenizer=tokenizer
         )

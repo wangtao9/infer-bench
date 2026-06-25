@@ -264,7 +264,7 @@ def run_single_request_tests(model, tokenizer, cfg, run_id, gpu_monitor):
         e2el_list = []
         gpu_monitor.start(reset_baseline=False)
 
-        for _ in range(sr_cfg.num_runs):
+        for _ in range(sr_cfg.num_requests):
             res = single_generate(model, tokenizer, prompt, sr_cfg.max_new_tokens)
             ttfts.append(res["ttft_ms"])
             tps_list.append(res["tps"])
@@ -288,7 +288,7 @@ def run_single_request_tests(model, tokenizer, cfg, run_id, gpu_monitor):
             BenchmarkResult(
                 engine="transformers",
                 test_type="single",
-                num_requests=1,
+                num_requests=sr_cfg.num_requests,
                 request_rate=float("inf"),
                 prompt_tokens=prompt_len,
                 max_new_tokens=sr_cfg.max_new_tokens,
@@ -363,9 +363,13 @@ def run_concurrent_tests(model, tokenizer, cfg, run_id, gpu_monitor):
         num_requests, cc_cfg.prompt_length, tokenizer=tokenizer
     )
 
-    # Warmup
+    # Warmup：使用不同的 prompt 避免正式测量时命中 KV cache
+    warmup_prompts = generate_batch_prompts(
+        num_requests, cc_cfg.prompt_length, tokenizer=tokenizer,
+        variant_offset=100,
+    )
     for _ in range(cc_cfg.num_warmup):
-        batch_generate(model, tokenizer, prompts, cc_cfg.max_new_tokens)
+        batch_generate(model, tokenizer, warmup_prompts, cc_cfg.max_new_tokens)
 
     # 仅处理 request_rate=inf 的轮次，跳过有限值（Poisson 不适用于同步批量）
     for rate in cc_cfg.request_rate:
