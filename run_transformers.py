@@ -58,6 +58,7 @@ def load_model_and_tokenizer(cfg):
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
+        dtype=torch_dtype,
         torch_dtype=torch_dtype,
         device_map=device_map,
         trust_remote_code=True,
@@ -73,7 +74,7 @@ def load_model_and_tokenizer(cfg):
 # ============================================================
 
 
-def single_generate(model, tokenizer, prompt, max_new_tokens, temperature=0.0):
+def single_generate(model, tokenizer, prompt, max_new_tokens, temperature=0.0, request_id=None):
     """单请求流式生成，测量 TTFT / ITL / TPOT / E2EL / TPS。
 
     使用 TextIteratorStreamer 在后台线程中运行 model.generate()，
@@ -85,11 +86,14 @@ def single_generate(model, tokenizer, prompt, max_new_tokens, temperature=0.0):
         prompt: 输入 prompt 文本。
         max_new_tokens: 最大生成 token 数。
         temperature: 采样温度，0.0 表示贪心解码。
+        request_id: 请求编号（用于日志）。
 
     Returns:
         dict: ttft_ms, itl_ms (list), tpot_ms, e2el_ms,
               total_tokens, total_time_s, tps, text
     """
+    logger.info("Generating | id=%s | prompt_len_chars=%d | prompt=%r",
+                request_id, len(prompt), prompt)
     inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
     streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
 
@@ -153,8 +157,11 @@ def single_generate(model, tokenizer, prompt, max_new_tokens, temperature=0.0):
 # ============================================================
 
 
-def batch_generate(model, tokenizer, prompts, max_new_tokens, temperature=0.0):
-    """批量生成（无流式），测量并发吞吐量。
+def batch_generate(model, tokenizer, prompts, max_new_tokens, temperature=0.0, batch_size=None):
+    """批量生成（无流式），分 mini-batch 执行以防 OOM，测量整体吞吐量。
+
+    将 prompts 按 batch_size 分批执行，TPS 按全部耗时计算，
+    语义上等同于 vLLM/SGLang 的 64 请求并发吞吐。
 
     NOTE: 批量生成无法精确测量每个请求的 TTFT，因此使用
     total_time_s / len(prompts) 作为 TTFT 的估计值。
@@ -167,46 +174,57 @@ def batch_generate(model, tokenizer, prompts, max_new_tokens, temperature=0.0):
         prompts: 输入 prompt 文本列表。
         max_new_tokens: 最大生成 token 数。
         temperature: 采样温度，0.0 表示贪心解码。
+        batch_size: 每个 mini-batch 的请求数。None 表示不分批。
 
     Returns:
         dict: mean_ttft_ms, mean_itl_ms, mean_tpot_ms, e2el_ms,
               total_tokens, concurrent_tps, total_time_s
     """
-    inputs = tokenizer(
-        prompts,
-        return_tensors="pt",
-        padding=True,
-        truncation=True,
-    ).to(model.device)
+    if batch_size is None or batch_size >= len(prompts):
+        batch_size = len(prompts)
 
-    gen_kwargs = {
-        **inputs,
-        "max_new_tokens": max_new_tokens,
-        "temperature": temperature if temperature > 0 else None,
-        "do_sample": temperature > 0,
-    }
+    logger.info("Batch generating | num_prompts=%d | batch_size=%d", len(prompts), batch_size)
 
+    total_tokens = 0
     start_time = time.monotonic()
 
-    with torch.no_grad():
-        outputs = model.generate(**gen_kwargs)
+    for i in range(0, len(prompts), batch_size):
+        batch_prompts = prompts[i:i + batch_size]
+        logger.info("Batch %d/%d | size=%d", i // batch_size + 1, -(-len(prompts) // batch_size), len(batch_prompts))
+
+        inputs = tokenizer(
+            batch_prompts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+        ).to(model.device)
+
+        gen_kwargs = {
+            **inputs,
+            "max_new_tokens": max_new_tokens,
+            "temperature": temperature if temperature > 0 else None,
+            "do_sample": temperature > 0,
+        }
+
+        with torch.no_grad():
+            outputs = model.generate(**gen_kwargs)
+
+        input_lengths = inputs["attention_mask"].sum(dim=1).tolist()
+        total_tokens += sum(
+            len(outputs[j]) - input_lengths[j] for j in range(len(batch_prompts))
+        )
 
     end_time = time.monotonic()
 
     total_time_s = end_time - start_time
     e2el_ms = total_time_s * 1000.0
-    input_lengths = inputs["attention_mask"].sum(dim=1).tolist()
-    total_tokens = sum(
-        len(outputs[i]) - input_lengths[i] for i in range(len(prompts))
-    )
     concurrent_tps = total_tokens / total_time_s if total_time_s > 0 else 0.0
     mean_ttft_ms = total_time_s * 1000.0 / len(prompts)  # estimate
 
     # ITL: 无法测量（无流式）
     mean_itl_ms = -1.0
 
-    # TPOT: 估算 = (total_time - estimated_ttft_per_req) / (tokens_per_req - 1)
-    # 简化：用 overall TPOT = e2el / total_tokens (粗估)
+    # TPOT: 估算 = e2el / total_tokens (粗估)
     mean_tpot_ms = e2el_ms / total_tokens if total_tokens > 0 else 0.0
 
     return {
@@ -263,8 +281,9 @@ def run_single_request_tests(model, tokenizer, cfg, run_id, gpu_monitor):
         tpot_list = []
         gpu_monitor.start(reset_baseline=False)
 
-        for _ in range(sr_cfg.num_requests):
-            res = single_generate(model, tokenizer, prompt, sr_cfg.max_new_tokens)
+        for req_id in range(sr_cfg.num_requests):
+            res = single_generate(model, tokenizer, prompt, sr_cfg.max_new_tokens,
+                                  request_id=req_id)
             ttfts.append(res["ttft_ms"])
             tps_list.append(res["tps"])
             itl_list.append(res["itl_ms"])
@@ -346,6 +365,7 @@ def run_concurrent_tests(model, tokenizer, cfg, run_id, gpu_monitor):
     results = []
     cc_cfg = cfg.test.concurrent
     cc_cfg.validate()
+    batch_size = cfg.engines.transformers.batch_size
 
     num_requests = cc_cfg.num_requests
     prompts = generate_batch_prompts(
@@ -358,27 +378,27 @@ def run_concurrent_tests(model, tokenizer, cfg, run_id, gpu_monitor):
         variant_offset=100,
     )
     for _ in range(cc_cfg.num_warmup):
-        batch_generate(model, tokenizer, warmup_prompts, cc_cfg.max_new_tokens)
-
-    # 仅处理 request_rate=inf 的轮次，跳过有限值（Poisson 不适用于同步批量）
-    for rate in cc_cfg.request_rate:
-        if rate != float("inf"):
+        try:
+            batch_generate(model, tokenizer, warmup_prompts, cc_cfg.max_new_tokens, batch_size=batch_size)
+        except torch.cuda.OutOfMemoryError:
             logger.warning(
-                "Transformers 忽略 request_rate=%s（同步批量处理仅支持 batch 模式）",
-                rate,
+                "Warmup OOM (num_requests=%d)，跳过 warmup，并发测试也可能 OOM",
+                num_requests,
             )
-            continue
+            torch.cuda.empty_cache()
+            break
 
-        logger.info(
-            "[concurrent] num_requests=%d, prompt_length=%d, max_new_tokens=%d",
-            num_requests,
-            cc_cfg.prompt_length,
-            cc_cfg.max_new_tokens,
-        )
+    # Transformers 仅支持 batch 模式，直接执行一次
+    logger.info(
+        "[concurrent] num_requests=%d, prompt_length=%d, max_new_tokens=%d",
+        num_requests,
+        cc_cfg.prompt_length,
+        cc_cfg.max_new_tokens,
+    )
 
-        # 单次运行
+    try:
         gpu_monitor.start(reset_baseline=False)
-        res = batch_generate(model, tokenizer, prompts, cc_cfg.max_new_tokens)
+        res = batch_generate(model, tokenizer, prompts, cc_cfg.max_new_tokens, batch_size=batch_size)
         gpu_monitor.stop()
 
         ttft_stats = compute_percentile_stats([res["mean_ttft_ms"]])
@@ -417,6 +437,38 @@ def run_concurrent_tests(model, tokenizer, cfg, run_id, gpu_monitor):
             res["mean_ttft_ms"],
             res["concurrent_tps"],
             res["mean_tpot_ms"],
+        )
+
+    except torch.cuda.OutOfMemoryError:
+        gpu_monitor.stop()
+        torch.cuda.empty_cache()
+        logger.warning(
+            "[concurrent] num_requests=%d OOM，记录失败并继续",
+            num_requests,
+        )
+        results.append(
+            BenchmarkResult(
+                engine="transformers",
+                test_type="concurrent",
+                num_requests=num_requests,
+                prompt_tokens=cc_cfg.prompt_length,
+                max_new_tokens=cc_cfg.max_new_tokens,
+                ttft_ms=-1,
+                median_ttft_ms=-1.0,
+                p99_ttft_ms=-1.0,
+                mean_tps=-1,
+                mean_itl_ms=-1.0,
+                median_itl_ms=-1.0,
+                p99_itl_ms=-1.0,
+                mean_tpot_ms=-1.0,
+                median_tpot_ms=-1.0,
+                p99_tpot_ms=-1.0,
+                peak_vram_mb=-1,
+                peak_vram_abs_mb=-1,
+                request_rate=float("inf"),
+                run_id=run_id,
+                timestamp=datetime.now().isoformat(),
+            )
         )
 
     return results

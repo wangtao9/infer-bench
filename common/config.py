@@ -84,6 +84,7 @@ class EngineSglangConfig:
 class EngineTransformersConfig:
     dtype: str = "float16"
     device_map: str = "auto"
+    batch_size: int = 8  # 并发测试时每个 batch 的请求数，防止 OOM
 
 
 @dataclass

@@ -21,6 +21,7 @@ from common.config import load_config
 from common.gpu import GPUMonitor
 from common.metrics import BenchmarkResult, compute_percentile_stats, make_run_id, results_to_csv
 from common.prompts import generate_batch_prompts
+from run_transformers import batch_generate
 
 logger = logging.getLogger("run_sweep")
 
@@ -333,6 +334,7 @@ def sweep_transformers(cfg, run_id: str) -> list[BenchmarkResult]:
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
+        dtype=torch_dtype,
         torch_dtype=torch_dtype,
         device_map=device_map,
         trust_remote_code=True,
@@ -361,39 +363,18 @@ def sweep_transformers(cfg, run_id: str) -> list[BenchmarkResult]:
                 concurrency, sw_cfg.prompt_length, tokenizer=tokenizer
             )
 
-            all_inputs = tokenizer(
-                prompts, return_tensors="pt", padding=True, truncation=True,
-            ).to(model.device)
-
+            batch_size = cfg.engines.transformers.batch_size
             gpu_monitor.start(reset_baseline=False)
-            start_time = time.monotonic()
-
-            with torch.no_grad():
-                outputs = model.generate(
-                    **all_inputs,
-                    max_new_tokens=sw_cfg.max_new_tokens,
-                )
-
-            end_time = time.monotonic()
+            res = batch_generate(model, tokenizer, prompts, sw_cfg.max_new_tokens, batch_size=batch_size)
             gpu_monitor.stop()
 
-            total_time_s = end_time - start_time
-            input_lengths = all_inputs["attention_mask"].sum(dim=1).tolist()
-            total_tokens = sum(len(outputs[i]) - input_lengths[i] for i in range(len(prompts)))
-            concurrent_tps = total_tokens / total_time_s if total_time_s > 0 else 0.0
-            mean_ttft_ms = total_time_s * 1000.0 / len(prompts)  # estimate
-            # ITL: 无法测量（批量生成无流式）→ -1.0 哨兵
-            mean_itl_ms = -1.0
-            # TPOT: 估算 = 总生成时间(ms) / total_tokens
-            mean_tpot_ms = total_time_s * 1000.0 / total_tokens if total_tokens > 0 else 0.0
             peak_vram = gpu_monitor.peak_vram_mb
             peak_vram_abs = gpu_monitor.peak_vram_abs_mb
 
             # Transformers 批量模式：单次运行，百分位即自身
-            # ITL 为 -1.0 哨兵，compute_percentile_stats 正确传播
-            ttft_stats = compute_percentile_stats([mean_ttft_ms])
-            itl_stats = compute_percentile_stats([mean_itl_ms])   # → 全 -1.0
-            tpot_stats = compute_percentile_stats([mean_tpot_ms])
+            ttft_stats = compute_percentile_stats([res["mean_ttft_ms"]])
+            itl_stats = compute_percentile_stats([res["mean_itl_ms"]])   # → 全 -1.0
+            tpot_stats = compute_percentile_stats([res["mean_tpot_ms"]])
 
             results.append(
                 BenchmarkResult(
@@ -406,7 +387,7 @@ def sweep_transformers(cfg, run_id: str) -> list[BenchmarkResult]:
                     ttft_ms=round(ttft_stats["mean"], 2),
                     median_ttft_ms=round(ttft_stats["median"], 2),
                     p99_ttft_ms=round(ttft_stats["p99"], 2),
-                    mean_tps=round(concurrent_tps, 2),
+                    mean_tps=round(res["concurrent_tps"], 2),
                     mean_itl_ms=round(itl_stats["mean"], 2),
                     median_itl_ms=round(itl_stats["median"], 2),
                     p99_itl_ms=round(itl_stats["p99"], 2),
@@ -422,9 +403,9 @@ def sweep_transformers(cfg, run_id: str) -> list[BenchmarkResult]:
             logger.info(
                 "[transformers sweep] concurrency=%d => ttft=%.2f ms, tps=%.2f tok/s, itl=N/A, tpot=%.2f ms",
                 concurrency,
-                mean_ttft_ms,
-                concurrent_tps,
-                mean_tpot_ms,
+                res["mean_ttft_ms"],
+                res["concurrent_tps"],
+                res["mean_tpot_ms"],
             )
 
         except Exception as e:
