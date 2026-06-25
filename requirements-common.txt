@@ -1,5 +1,4 @@
-vllm
-sglang[all]
+# 所有引擎共用的依赖
 torch
 transformers
 accelerate

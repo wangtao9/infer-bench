@@ -1,0 +1,2 @@
+# Transformers 基准测试（无额外推理引擎依赖）
+-r requirements-common.txt

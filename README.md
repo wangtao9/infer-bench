@@ -21,7 +21,15 @@ LLM 推理引擎性能基准测试工具。在相同 GPU 上对比 vLLM、SGLang
 ### 1. 安装依赖
 
 ```bash
-pip install -r requirements.txt
+# 按需创建环境（只需测试的引擎即可）
+conda create -n vllm python=3.12
+conda create -n sglang python=3.12
+conda create -n transformers python=3.12
+
+# 各环境分别安装
+conda activate vllm          && pip install -r requirements-vllm.txt
+conda activate sglang        && pip install -r requirements-sglang.txt
+conda activate transformers  && pip install -r requirements-transformers.txt
 ```
 
 ### 2. 修改配置（可选）
@@ -58,6 +66,7 @@ python generate_report.py
 - **端口**: vLLM 使用 8000，SGLang 使用 8001，请确保端口空闲
 - **并发语义**: Transformers 使用 batch generate 而非 HTTP 级并发，与 vLLM/SGLang 的 continuous batching 语义不同
 - **运行时间**: 完整测试（3 引擎 + sweep）预计需要 1-2 小时
+- **依赖冲突**: vLLM 和 SGLang 不可装在同一环境，需用 `requirements-vllm.txt` / `requirements-sglang.txt` 分别安装
 
 ## 项目结构
 

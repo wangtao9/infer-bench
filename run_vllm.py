@@ -130,13 +130,14 @@ async def run_single_request_tests(
         tpot_list = []
         gpu_monitor.start(reset_baseline=False)
 
-        for run_idx in range(sr_cfg.num_requests):
+        for req_id in range(sr_cfg.num_requests):
             run_prompt = generate_prompt(
-                prompt_len, variant=sr_cfg.num_warmup + run_idx,
+                prompt_len, variant=sr_cfg.num_warmup + req_id,
                 tokenizer=tokenizer,
             )
             res = await stream_request(
-                base_url, run_prompt, model, max_tokens=sr_cfg.max_new_tokens
+                base_url, run_prompt, model, max_tokens=sr_cfg.max_new_tokens,
+                temperature=0, request_id=req_id
             )
             ttfts.append(res["ttft_ms"])
             tps_list.append(res["tps"])

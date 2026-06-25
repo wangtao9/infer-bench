@@ -96,7 +96,7 @@ def start_server(engine: str, cfg) -> subprocess.Popen:
         port = cfg.engines.sglang.port
         extra_args = cfg.engines.sglang.extra_args
         cmd = (
-            f"python -m sglang.launch_server "
+            f"sglang serve "
             f"--model-path {model} "
             f"--port {port} "
             f"--enable-metrics "
