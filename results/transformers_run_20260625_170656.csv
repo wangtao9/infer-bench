@@ -1,0 +1,5 @@
+engine,test_type,num_requests,request_rate,prompt_tokens,max_new_tokens,ttft_ms,median_ttft_ms,p99_ttft_ms,mean_tps,mean_itl_ms,median_itl_ms,p99_itl_ms,mean_tpot_ms,median_tpot_ms,p99_tpot_ms,peak_vram_mb,peak_vram_abs_mb,run_id,timestamp
+transformers,single,10,inf,128,256,48.01,47.98,48.40,28.30,35.01,35.14,35.41,35.29,35.30,35.40,17254.2,17694.6,run_20260625_170656,2026-06-25T17:09:00.746422
+transformers,single,10,inf,512,256,140.66,140.87,142.30,28.12,35.01,35.14,35.50,35.15,35.15,35.18,17290.2,17730.6,run_20260625_170656,2026-06-25T17:10:59.159218
+transformers,single,10,inf,1024,256,190.54,190.49,191.25,27.91,35.09,35.22,35.57,35.23,35.22,35.25,17312.2,17752.6,run_20260625_170656,2026-06-25T17:12:58.464207
+transformers,concurrent,64,inf,512,256,1682.86,1682.86,1682.86,155.78,-1.00,-1.00,-1.00,6.42,6.42,6.42,17314.2,17754.6,run_20260625_170656,2026-06-25T17:16:34.468833

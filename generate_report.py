@@ -25,7 +25,7 @@ ENGINE_COLORS = {"vllm": "#1f77b4", "sglang": "#ff7f0e", "transformers": "#2ca02
 ENGINE_LABELS = {"vllm": "vLLM", "sglang": "SGLang", "transformers": "Transformers"}
 
 plt.rcParams["font.sans-serif"] = [
-    "Arial Unicode MS", "WenQuanYi Micro Hei", "SimHei", "DejaVu Sans",
+    "Arial Unicode MS", "PingFang SC", "Heiti SC", "WenQuanYi Micro Hei", "SimHei", "DejaVu Sans",
 ]
 plt.rcParams["axes.unicode_minus"] = False
 
@@ -123,10 +123,10 @@ def plot_single_request_ttft(df: pd.DataFrame, output_dir: str) -> None:
                 alpha=0.7,
             )
 
-    ax.set_xlabel("输入长度 (tokens)")
+    ax.set_xlabel("Prompt Length (tokens)")
     ax.set_ylabel("TTFT (ms)")
-    ax.set_title("TTFT vs 输入长度（单请求）— 实线=mean, 虚线=P99")
-    ax.legend(title="引擎")
+    ax.set_title("TTFT vs Prompt Length (Single Request) — solid=mean, dashed=P99")
+    ax.legend(title="Engine")
     fig.tight_layout()
 
     path = os.path.join(output_dir, "1_ttft_vs_input_length.png")
@@ -165,10 +165,10 @@ def plot_single_request_tps(df: pd.DataFrame, output_dir: str) -> None:
             linewidth=2,
         )
 
-    ax.set_xlabel("输入长度 (tokens)")
-    ax.set_ylabel("吞吐量 (tokens/s)")
-    ax.set_title("TPS vs 输入长度（单请求）")
-    ax.legend(title="引擎")
+    ax.set_xlabel("Prompt Length (tokens)")
+    ax.set_ylabel("Throughput (tokens/s)")
+    ax.set_title("TPS vs Prompt Length (Single Request)")
+    ax.legend(title="Engine")
     fig.tight_layout()
 
     path = os.path.join(output_dir, "2_tps_vs_input_length.png")
@@ -210,10 +210,10 @@ def plot_concurrent_tps(df: pd.DataFrame, output_dir: str) -> None:
     ax.set_xscale("log", base=2)
     ax.xaxis.set_major_formatter(mticker.ScalarFormatter())
     ax.xaxis.set_minor_formatter(mticker.NullFormatter())
-    ax.set_xlabel("并发数")
-    ax.set_ylabel("吞吐量 (tokens/s)")
-    ax.set_title("TPS vs 并发数（并发测试）")
-    ax.legend(title="引擎")
+    ax.set_xlabel("Concurrency")
+    ax.set_ylabel("Throughput (tokens/s)")
+    ax.set_title("TPS vs Concurrency (Concurrent Test)")
+    ax.legend(title="Engine")
     fig.tight_layout()
 
     path = os.path.join(output_dir, "3_tps_vs_concurrency.png")
@@ -268,10 +268,10 @@ def plot_concurrent_ttft(df: pd.DataFrame, output_dir: str) -> None:
     ax.set_xscale("log", base=2)
     ax.xaxis.set_major_formatter(mticker.ScalarFormatter())
     ax.xaxis.set_minor_formatter(mticker.NullFormatter())
-    ax.set_xlabel("并发数")
+    ax.set_xlabel("Concurrency")
     ax.set_ylabel("TTFT (ms)")
-    ax.set_title("TTFT vs 并发数（并发测试）— 实线=mean, 虚线=P99")
-    ax.legend(title="引擎")
+    ax.set_title("TTFT vs Concurrency (Concurrent Test) — solid=mean, dashed=P99")
+    ax.legend(title="Engine")
     fig.tight_layout()
 
     path = os.path.join(output_dir, "4_ttft_vs_concurrency.png")
@@ -341,10 +341,10 @@ def plot_sweep_dual_axis(df: pd.DataFrame, output_dir: str) -> None:
     ax1.set_xscale("log", base=2)
     ax1.xaxis.set_major_formatter(mticker.ScalarFormatter())
     ax1.xaxis.set_minor_formatter(mticker.NullFormatter())
-    ax1.set_xlabel("并发数")
-    ax1.set_ylabel("吞吐量 TPS (tokens/s)")
+    ax1.set_xlabel("Concurrency")
+    ax1.set_ylabel("Throughput TPS (tokens/s)")
     ax2.set_ylabel("TTFT (ms)")
-    ax1.set_title("TPS & TTFT vs 并发数（渐进扫描）")
+    ax1.set_title("TPS & TTFT vs Concurrency (Sweep)")
 
     ax1.legend(handles, labels, title="指标", loc="best", fontsize=9)
     fig.tight_layout()
@@ -419,10 +419,10 @@ def plot_vram_comparison(df: pd.DataFrame, output_dir: str) -> None:
 
     ax.set_xticks(x + width)
     ax.set_xticklabels([str(nr) for nr in num_requests_list])
-    ax.set_xlabel("并发数")
-    ax.set_ylabel("峰值显存 (MB)")
-    ax.set_title("峰值显存 vs 并发数（分组柱状图）")
-    ax.legend(title="引擎")
+    ax.set_xlabel("Concurrency")
+    ax.set_ylabel("Peak VRAM (MB)")
+    ax.set_title("Peak VRAM vs Concurrency (Grouped Bar)")
+    ax.legend(title="Engine")
     fig.tight_layout()
 
     path = os.path.join(output_dir, "6_vram_vs_concurrency.png")
@@ -462,10 +462,10 @@ def plot_single_request_itl(df: pd.DataFrame, output_dir: str) -> None:
             linewidth=2,
         )
 
-    ax.set_xlabel("输入长度 (tokens)")
+    ax.set_xlabel("Prompt Length (tokens)")
     ax.set_ylabel("ITL P99 (ms)")
-    ax.set_title("ITL P99 vs 输入长度（单请求）")
-    ax.legend(title="引擎")
+    ax.set_title("ITL P99 vs Prompt Length (Single Request)")
+    ax.legend(title="Engine")
     fig.tight_layout()
 
     path = os.path.join(output_dir, "8_itl_vs_input_length.png")
@@ -507,10 +507,10 @@ def plot_concurrent_tpot(df: pd.DataFrame, output_dir: str) -> None:
     ax.set_xscale("log", base=2)
     ax.xaxis.set_major_formatter(mticker.ScalarFormatter())
     ax.xaxis.set_minor_formatter(mticker.NullFormatter())
-    ax.set_xlabel("并发数")
+    ax.set_xlabel("Concurrency")
     ax.set_ylabel("TPOT P99 (ms)")
-    ax.set_title("TPOT P99 vs 并发数")
-    ax.legend(title="引擎")
+    ax.set_title("TPOT P99 vs Concurrency")
+    ax.legend(title="Engine")
     fig.tight_layout()
 
     path = os.path.join(output_dir, "9_tpot_vs_concurrency.png")
@@ -558,9 +558,9 @@ def plot_poisson_tps(df: pd.DataFrame, output_dir: str) -> None:
         )
 
     ax.set_xlabel("Request Rate (req/s)")
-    ax.set_ylabel("吞吐量 (tokens/s)")
-    ax.set_title("TPS vs Request Rate（Poisson 调度）")
-    ax.legend(title="引擎")
+    ax.set_ylabel("Throughput (tokens/s)")
+    ax.set_title("TPS vs Request Rate (Poisson Scheduling)")
+    ax.legend(title="Engine")
     fig.tight_layout()
 
     path = os.path.join(output_dir, "11_tps_vs_request_rate.png")
@@ -621,8 +621,8 @@ def plot_poisson_ttft(df: pd.DataFrame, output_dir: str) -> None:
 
     ax.set_xlabel("Request Rate (req/s)")
     ax.set_ylabel("TTFT (ms)")
-    ax.set_title("TTFT vs Request Rate（Poisson 调度）— 实线=mean, 虚线=P99")
-    ax.legend(title="引擎")
+    ax.set_title("TTFT vs Request Rate (Poisson Scheduling) — solid=mean, dashed=P99")
+    ax.legend(title="Engine")
     fig.tight_layout()
 
     path = os.path.join(output_dir, "12_ttft_vs_request_rate.png")
@@ -690,10 +690,10 @@ def plot_radar(df: pd.DataFrame, output_dir: str) -> None:
 
     # 归一化到 0-1
     if has_itl:
-        categories = ["TTFT↓", "ITL↓", "TPS↑", "显存效率↑"]
+        categories = ["TTFT↓", "ITL↓", "TPS↑", "VRAM Eff↑"]
         raw_keys = ["ttft_inv", "itl_inv", "tps", "vram_eff"]
     else:
-        categories = ["TTFT↓", "TPS↑", "显存效率↑"]
+        categories = ["TTFT↓", "TPS↑", "VRAM Eff↑"]
         raw_keys = ["ttft_inv", "tps", "vram_eff"]
 
     for key in raw_keys:
@@ -724,7 +724,7 @@ def plot_radar(df: pd.DataFrame, output_dir: str) -> None:
     ax.set_ylim(0, 1)
     ax.set_yticks([0.25, 0.5, 0.75, 1.0])
     ax.set_yticklabels(["0.25", "0.5", "0.75", "1.0"], fontsize=8)
-    ax.set_title("综合性能雷达图", y=1.08, fontsize=14)
+    ax.set_title("Overall Performance Radar", y=1.08, fontsize=14)
     ax.legend(loc="upper right", bbox_to_anchor=(1.3, 1.1))
     fig.tight_layout()
 
