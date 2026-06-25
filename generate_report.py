@@ -70,7 +70,7 @@ def load_results(results_dir: str) -> pd.DataFrame:
 
     # 过滤掉 -1 值（失败的测试）
     numeric_cols = ["ttft_ms", "mean_tps", "peak_vram_mb", "peak_vram_abs_mb",
-                    "median_itl_ms", "median_e2el_ms"]
+                    "median_itl_ms"]
     for col in numeric_cols:
         if col in df.columns:
             df = df[df[col] != -1]
@@ -519,51 +519,6 @@ def plot_concurrent_tpot(df: pd.DataFrame, output_dir: str) -> None:
     print(f"  saved: {path}")
 
 
-# ── 图表 10: E2EL P99 vs 并发数 ───────────────────────────────
-
-
-def plot_concurrent_e2el(df: pd.DataFrame, output_dir: str) -> None:
-    """绘图表 10: E2EL P99 vs 并发数（concurrent + sweep 数据）。"""
-    subset = df[df["test_type"].isin(["concurrent", "sweep"])].copy()
-    if subset.empty or "p99_e2el_ms" not in subset.columns:
-        print("[SKIP] No E2EL data for chart 10")
-        return
-    subset = subset[subset["p99_e2el_ms"] > 0]
-    if subset.empty:
-        print("[SKIP] No valid E2EL data (all -1 or missing)")
-        return
-
-    fig, ax = plt.subplots(figsize=(8, 5))
-
-    for engine in ["vllm", "sglang", "transformers"]:
-        eng_data = subset[subset["engine"] == engine].sort_values("num_requests")
-        if eng_data.empty:
-            continue
-        grouped = eng_data.groupby("num_requests")["p99_e2el_ms"].mean().reset_index()
-        ax.plot(
-            grouped["num_requests"],
-            grouped["p99_e2el_ms"],
-            marker="o",
-            color=ENGINE_COLORS[engine],
-            label=ENGINE_LABELS[engine],
-            linewidth=2,
-        )
-
-    ax.set_xscale("log", base=2)
-    ax.xaxis.set_major_formatter(mticker.ScalarFormatter())
-    ax.xaxis.set_minor_formatter(mticker.NullFormatter())
-    ax.set_xlabel("并发数")
-    ax.set_ylabel("E2EL P99 (ms)")
-    ax.set_title("E2EL P99 vs 并发数")
-    ax.legend(title="引擎")
-    fig.tight_layout()
-
-    path = os.path.join(output_dir, "10_e2el_vs_concurrency.png")
-    fig.savefig(path, dpi=150)
-    plt.close(fig)
-    print(f"  saved: {path}")
-
-
 # ── 图表 11: TPS vs Request Rate（Poisson 模式）─────────────────
 
 
@@ -878,15 +833,11 @@ def generate_markdown_report(
     concurrent = df[df["test_type"] == "concurrent"] if not df.empty else pd.DataFrame()
     if not concurrent.empty:
         has_p99 = "p99_ttft_ms" in concurrent.columns
-        has_e2el = "p99_e2el_ms" in concurrent.columns
         has_rate = "request_rate" in concurrent.columns
         cols = "| 引擎 | 请求数 | Request Rate | TTFT mean (ms)"
         sep = "|------|--------|--------------|---------------"
         if has_p99:
             cols += " | TTFT P99 (ms)"
-            sep += "|--------------"
-        if has_e2el:
-            cols += " | E2EL P99 (ms)"
             sep += "|--------------"
         cols += " | TPS (tokens/s) | 峰值显存 (MB) |"
         sep += "|----------------|---------------|"
@@ -904,8 +855,6 @@ def generate_markdown_report(
             parts = [eng, str(int(row['num_requests'])), rate_str, f"{row['ttft_ms']:.2f}"]
             if has_p99:
                 parts.append(f"{row['p99_ttft_ms']:.2f}")
-            if has_e2el:
-                parts.append(f"{row['p99_e2el_ms']:.2f}")
             parts.append(f"{row['mean_tps']:.2f}")
             parts.append(f"{vram:.0f}")
             lines.append("| " + " | ".join(parts) + " |")
@@ -919,8 +868,6 @@ def generate_markdown_report(
     lines.append("![TTFT vs 并发数](4_ttft_vs_concurrency.png)\n")
     lines.append("### TPOT P99 vs 并发数\n")
     lines.append("![TPOT P99 vs 并发数](9_tpot_vs_concurrency.png)\n")
-    lines.append("### E2EL P99 vs 并发数\n")
-    lines.append("![E2EL P99 vs 并发数](10_e2el_vs_concurrency.png)\n")
 
     # ── Poisson 模式图表（仅在有数据时展示）──
     if not concurrent.empty and "request_rate" in concurrent.columns:
@@ -936,14 +883,10 @@ def generate_markdown_report(
     sweep = df[df["test_type"] == "sweep"] if not df.empty else pd.DataFrame()
     if not sweep.empty:
         has_p99 = "p99_ttft_ms" in sweep.columns
-        has_e2el = "p99_e2el_ms" in sweep.columns
         cols = "| 引擎 | 并发数 | TTFT mean (ms)"
         sep = "|------|--------|---------------"
         if has_p99:
             cols += " | TTFT P99 (ms)"
-            sep += "|--------------"
-        if has_e2el:
-            cols += " | E2EL P99 (ms)"
             sep += "|--------------"
         cols += " | TPS (tokens/s) | 峰值显存 (MB) |"
         sep += "|----------------|---------------|"
@@ -955,8 +898,6 @@ def generate_markdown_report(
             parts = [eng, str(int(row['num_requests'])), f"{row['ttft_ms']:.2f}"]
             if has_p99:
                 parts.append(f"{row['p99_ttft_ms']:.2f}")
-            if has_e2el:
-                parts.append(f"{row['p99_e2el_ms']:.2f}")
             parts.append(f"{row['mean_tps']:.2f}")
             parts.append(f"{vram:.0f}")
             lines.append("| " + " | ".join(parts) + " |")
@@ -1041,7 +982,6 @@ def main() -> None:
     plot_radar(df, output_dir)
     plot_single_request_itl(df, output_dir)
     plot_concurrent_tpot(df, output_dir)
-    plot_concurrent_e2el(df, output_dir)
     plot_poisson_tps(df, output_dir)
     plot_poisson_ttft(df, output_dir)
 

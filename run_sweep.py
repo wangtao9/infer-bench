@@ -218,7 +218,6 @@ async def sweep_http_engine(engine: str, cfg, run_id: str) -> list[BenchmarkResu
                 ttft_stats = compute_percentile_stats(res["all_ttfts_ms"])
                 itl_stats = compute_percentile_stats(res["all_itls_ms"])
                 tpot_stats = compute_percentile_stats(res["all_tpots_ms"])
-                e2el_stats = compute_percentile_stats(res["all_e2els_ms"])
 
                 results.append(
                     BenchmarkResult(
@@ -230,21 +229,14 @@ async def sweep_http_engine(engine: str, cfg, run_id: str) -> list[BenchmarkResu
                         max_new_tokens=sw_cfg.max_new_tokens,
                         ttft_ms=round(ttft_stats["mean"], 2),
                         median_ttft_ms=round(ttft_stats["median"], 2),
-                        p90_ttft_ms=round(ttft_stats["p90"], 2),
                         p99_ttft_ms=round(ttft_stats["p99"], 2),
                         mean_tps=round(res["concurrent_tps"], 2),
                         mean_itl_ms=round(itl_stats["mean"], 2),
                         median_itl_ms=round(itl_stats["median"], 2),
-                        p90_itl_ms=round(itl_stats["p90"], 2),
                         p99_itl_ms=round(itl_stats["p99"], 2),
                         mean_tpot_ms=round(tpot_stats["mean"], 2),
                         median_tpot_ms=round(tpot_stats["median"], 2),
-                        p90_tpot_ms=round(tpot_stats["p90"], 2),
                         p99_tpot_ms=round(tpot_stats["p99"], 2),
-                        e2el_ms=round(e2el_stats["mean"], 2),
-                        median_e2el_ms=round(e2el_stats["median"], 2),
-                        p90_e2el_ms=round(e2el_stats["p90"], 2),
-                        p99_e2el_ms=round(e2el_stats["p99"], 2),
                         peak_vram_mb=round(gpu_monitor.peak_vram_mb, 1),
                         peak_vram_abs_mb=round(gpu_monitor.peak_vram_abs_mb, 1),
                         run_id=run_id,
@@ -252,14 +244,13 @@ async def sweep_http_engine(engine: str, cfg, run_id: str) -> list[BenchmarkResu
                     )
                 )
                 logger.info(
-                    "[%s sweep] concurrency=%d => ttft=%.2f ms (p99=%.2f), tps=%.2f tok/s, itl=%.2f ms (p99=%.2f), tpot=%.2f ms, e2el=%.2f ms",
+                    "[%s sweep] concurrency=%d => ttft=%.2f ms (p99=%.2f), tps=%.2f tok/s, itl=%.2f ms (p99=%.2f), tpot=%.2f ms",
                     engine,
                     concurrency,
                     ttft_stats["mean"], ttft_stats["p99"],
                     res["concurrent_tps"],
                     itl_stats["mean"], itl_stats["p99"],
                     tpot_stats["mean"],
-                    e2el_stats["mean"],
                 )
 
             except Exception as e:
@@ -277,21 +268,14 @@ async def sweep_http_engine(engine: str, cfg, run_id: str) -> list[BenchmarkResu
                         max_new_tokens=sw_cfg.max_new_tokens,
                         ttft_ms=-1,
                         median_ttft_ms=-1.0,
-                        p90_ttft_ms=-1.0,
                         p99_ttft_ms=-1.0,
                         mean_tps=-1,
                         mean_itl_ms=-1.0,
                         median_itl_ms=-1.0,
-                        p90_itl_ms=-1.0,
                         p99_itl_ms=-1.0,
                         mean_tpot_ms=-1.0,
                         median_tpot_ms=-1.0,
-                        p90_tpot_ms=-1.0,
                         p99_tpot_ms=-1.0,
-                        e2el_ms=-1.0,
-                        median_e2el_ms=-1.0,
-                        p90_e2el_ms=-1.0,
-                        p99_e2el_ms=-1.0,
                         peak_vram_mb=-1,
                         peak_vram_abs_mb=-1,
                         run_id=run_id,
@@ -394,15 +378,14 @@ def sweep_transformers(cfg, run_id: str) -> list[BenchmarkResult]:
             gpu_monitor.stop()
 
             total_time_s = end_time - start_time
-            e2el_ms = total_time_s * 1000.0
             input_lengths = all_inputs["attention_mask"].sum(dim=1).tolist()
             total_tokens = sum(len(outputs[i]) - input_lengths[i] for i in range(len(prompts)))
             concurrent_tps = total_tokens / total_time_s if total_time_s > 0 else 0.0
             mean_ttft_ms = total_time_s * 1000.0 / len(prompts)  # estimate
             # ITL: 无法测量（批量生成无流式）→ -1.0 哨兵
             mean_itl_ms = -1.0
-            # TPOT: 估算 = e2el / total_tokens
-            mean_tpot_ms = e2el_ms / total_tokens if total_tokens > 0 else 0.0
+            # TPOT: 估算 = 总生成时间(ms) / total_tokens
+            mean_tpot_ms = total_time_s * 1000.0 / total_tokens if total_tokens > 0 else 0.0
             peak_vram = gpu_monitor.peak_vram_mb
             peak_vram_abs = gpu_monitor.peak_vram_abs_mb
 
@@ -411,7 +394,6 @@ def sweep_transformers(cfg, run_id: str) -> list[BenchmarkResult]:
             ttft_stats = compute_percentile_stats([mean_ttft_ms])
             itl_stats = compute_percentile_stats([mean_itl_ms])   # → 全 -1.0
             tpot_stats = compute_percentile_stats([mean_tpot_ms])
-            e2el_stats = compute_percentile_stats([e2el_ms])
 
             results.append(
                 BenchmarkResult(
@@ -423,21 +405,14 @@ def sweep_transformers(cfg, run_id: str) -> list[BenchmarkResult]:
                     max_new_tokens=sw_cfg.max_new_tokens,
                     ttft_ms=round(ttft_stats["mean"], 2),
                     median_ttft_ms=round(ttft_stats["median"], 2),
-                    p90_ttft_ms=round(ttft_stats["p90"], 2),
                     p99_ttft_ms=round(ttft_stats["p99"], 2),
                     mean_tps=round(concurrent_tps, 2),
                     mean_itl_ms=round(itl_stats["mean"], 2),
                     median_itl_ms=round(itl_stats["median"], 2),
-                    p90_itl_ms=round(itl_stats["p90"], 2),
                     p99_itl_ms=round(itl_stats["p99"], 2),
                     mean_tpot_ms=round(tpot_stats["mean"], 2),
                     median_tpot_ms=round(tpot_stats["median"], 2),
-                    p90_tpot_ms=round(tpot_stats["p90"], 2),
                     p99_tpot_ms=round(tpot_stats["p99"], 2),
-                    e2el_ms=round(e2el_stats["mean"], 2),
-                    median_e2el_ms=round(e2el_stats["median"], 2),
-                    p90_e2el_ms=round(e2el_stats["p90"], 2),
-                    p99_e2el_ms=round(e2el_stats["p99"], 2),
                     peak_vram_mb=round(peak_vram, 1),
                     peak_vram_abs_mb=round(peak_vram_abs, 1),
                     run_id=run_id,
@@ -445,12 +420,11 @@ def sweep_transformers(cfg, run_id: str) -> list[BenchmarkResult]:
                 )
             )
             logger.info(
-                "[transformers sweep] concurrency=%d => ttft=%.2f ms, tps=%.2f tok/s, itl=N/A, tpot=%.2f ms, e2el=%.2f ms",
+                "[transformers sweep] concurrency=%d => ttft=%.2f ms, tps=%.2f tok/s, itl=N/A, tpot=%.2f ms",
                 concurrency,
                 mean_ttft_ms,
                 concurrent_tps,
                 mean_tpot_ms,
-                e2el_ms,
             )
 
         except Exception as e:
@@ -470,21 +444,14 @@ def sweep_transformers(cfg, run_id: str) -> list[BenchmarkResult]:
                         max_new_tokens=sw_cfg.max_new_tokens,
                         ttft_ms=-1,
                         median_ttft_ms=-1.0,
-                        p90_ttft_ms=-1.0,
                         p99_ttft_ms=-1.0,
                         mean_tps=-1,
                         mean_itl_ms=-1.0,
                         median_itl_ms=-1.0,
-                        p90_itl_ms=-1.0,
                         p99_itl_ms=-1.0,
                         mean_tpot_ms=-1.0,
                         median_tpot_ms=-1.0,
-                        p90_tpot_ms=-1.0,
                         p99_tpot_ms=-1.0,
-                        e2el_ms=-1.0,
-                        median_e2el_ms=-1.0,
-                        p90_e2el_ms=-1.0,
-                        p99_e2el_ms=-1.0,
                         peak_vram_mb=-1,
                         peak_vram_abs_mb=-1,
                         run_id=run_id,

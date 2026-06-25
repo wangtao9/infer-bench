@@ -1,14 +1,13 @@
-"""指标采集工具：TTFT/TPS/ITL/TPOT/E2EL 计算和数据记录。
+"""指标采集工具：TTFT/TPS/ITL/TPOT 计算和数据记录。
 
 参照 vLLM bench serve 的指标体系：
 - TTFT: 首 Token 延迟 (ms) — 客户端时间戳
 - ITL: Inter-Token Latency (ms) — 逐 chunk 时间戳差值
-- TPOT: Time Per Output Token (ms) — (E2EL - TTFT) / (output_tokens - 1)
-- E2EL: 端到端延迟 (ms) — 请求发出到最后一个 chunk
+- TPOT: Time Per Output Token (ms) — (总生成时间 - TTFT) / (output_tokens - 1)
 - TPS: 吞吐 (tokens/s) — 客户端统计
 
 百分位统计（参照 vLLM bench serve calculate_metrics）：
-- median / P90 / P99: 使用 numpy 计算，覆盖 TTFT / ITL / TPOT / E2EL
+- median / P99: 使用 numpy 计算，覆盖 TTFT / ITL / TPOT
 
 GPU 显存指标：
 - peak_vram_mb: 峰值增量 (MB) — pynvml（Transformers 有意义，预分配引擎为 0）
@@ -34,21 +33,14 @@ class BenchmarkResult:
     ttft_ms: float          # 首 Token 延迟 mean (ms)
     request_rate: float = float("inf")  # inf=batch（同时发出），有限值=Poisson 调度 (req/s)
     median_ttft_ms: float = 0.0
-    p90_ttft_ms: float = 0.0
     p99_ttft_ms: float = 0.0
     mean_tps: float = 0.0         # 平均吞吐 (tokens/s)
     mean_itl_ms: float = 0.0      # 平均 Inter-Token Latency (ms)
     median_itl_ms: float = 0.0
-    p90_itl_ms: float = 0.0
     p99_itl_ms: float = 0.0
     mean_tpot_ms: float = 0.0     # 平均 Time Per Output Token (ms)
     median_tpot_ms: float = 0.0
-    p90_tpot_ms: float = 0.0
     p99_tpot_ms: float = 0.0
-    e2el_ms: float = 0.0          # 端到端延迟 mean (ms)
-    median_e2el_ms: float = 0.0
-    p90_e2el_ms: float = 0.0
-    p99_e2el_ms: float = 0.0
     peak_vram_mb: float = 0.0     # 峰值显存增量 (MB) — pynvml
     peak_vram_abs_mb: float = 0.0 # 峰值显存绝对占用量 (MB) — pynvml
     run_id: str = ""
@@ -66,15 +58,15 @@ def compute_percentile_stats(
 
     Args:
         values: 指标值列表（如所有 TTFT）。
-        percentiles: 百分位级别列表，默认 [90, 99]。
+        percentiles: 百分位级别列表，默认 [99]。
 
     Returns:
-        dict with keys: mean, median, p90, p99（及自定义百分位）。
+        dict with keys: mean, median, p99（及自定义百分位）。
         - 空列表 → 全部 0.0
         - 全部 -1.0 → 全部 -1.0（哨兵传播）
     """
     if percentiles is None:
-        percentiles = [90, 99]
+        percentiles = [99]
 
     sentinel = -1.0
     result_keys = ["mean", "median"] + [f"p{int(p)}" for p in percentiles]
@@ -119,8 +111,13 @@ def compute_tps(total_tokens: int, total_time_s: float) -> float:
 def compute_tpot_ms(e2el_s: float, ttft_s: float, output_tokens: int) -> float:
     """计算 Time Per Output Token。
 
-    TPOT = (E2EL - TTFT) / (output_tokens - 1)
+    TPOT = (总生成时间 - TTFT) / (output_tokens - 1)
     参照 vLLM bench serve 的计算方式。
+
+    Args:
+        e2el_s: 总生成时间（秒），即从请求发出到最后一个 token 的时间。
+        ttft_s: 首 Token 延迟（秒）。
+        output_tokens: 输出 token 数量。
     """
     if output_tokens <= 1:
         return 0.0
@@ -150,11 +147,10 @@ def results_to_csv(
     fieldnames = [
         "engine", "test_type", "num_requests", "request_rate", "prompt_tokens",
         "max_new_tokens",
-        "ttft_ms", "median_ttft_ms", "p90_ttft_ms", "p99_ttft_ms",
+        "ttft_ms", "median_ttft_ms", "p99_ttft_ms",
         "mean_tps",
-        "mean_itl_ms", "median_itl_ms", "p90_itl_ms", "p99_itl_ms",
-        "mean_tpot_ms", "median_tpot_ms", "p90_tpot_ms", "p99_tpot_ms",
-        "e2el_ms", "median_e2el_ms", "p90_e2el_ms", "p99_e2el_ms",
+        "mean_itl_ms", "median_itl_ms", "p99_itl_ms",
+        "mean_tpot_ms", "median_tpot_ms", "p99_tpot_ms",
         "peak_vram_mb", "peak_vram_abs_mb",
         "run_id", "timestamp",
     ]
@@ -172,21 +168,14 @@ def results_to_csv(
                 "max_new_tokens": r.max_new_tokens,
                 "ttft_ms": f"{r.ttft_ms:.2f}",
                 "median_ttft_ms": f"{r.median_ttft_ms:.2f}",
-                "p90_ttft_ms": f"{r.p90_ttft_ms:.2f}",
                 "p99_ttft_ms": f"{r.p99_ttft_ms:.2f}",
                 "mean_tps": f"{r.mean_tps:.2f}",
                 "mean_itl_ms": f"{r.mean_itl_ms:.2f}",
                 "median_itl_ms": f"{r.median_itl_ms:.2f}",
-                "p90_itl_ms": f"{r.p90_itl_ms:.2f}",
                 "p99_itl_ms": f"{r.p99_itl_ms:.2f}",
                 "mean_tpot_ms": f"{r.mean_tpot_ms:.2f}",
                 "median_tpot_ms": f"{r.median_tpot_ms:.2f}",
-                "p90_tpot_ms": f"{r.p90_tpot_ms:.2f}",
                 "p99_tpot_ms": f"{r.p99_tpot_ms:.2f}",
-                "e2el_ms": f"{r.e2el_ms:.2f}",
-                "median_e2el_ms": f"{r.median_e2el_ms:.2f}",
-                "p90_e2el_ms": f"{r.p90_e2el_ms:.2f}",
-                "p99_e2el_ms": f"{r.p99_e2el_ms:.2f}",
                 "peak_vram_mb": f"{r.peak_vram_mb:.1f}",
                 "peak_vram_abs_mb": f"{r.peak_vram_abs_mb:.1f}",
                 "run_id": r.run_id,

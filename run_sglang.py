@@ -119,7 +119,6 @@ async def run_single_request_tests(
         tps_list = []
         itl_list = []
         tpot_list = []
-        e2el_list = []
         gpu_monitor.start(reset_baseline=False)
 
         for run_idx in range(sr_cfg.num_requests):
@@ -134,7 +133,6 @@ async def run_single_request_tests(
             tps_list.append(res["tps"])
             itl_list.append(res["itl_ms"])
             tpot_list.append(res["tpot_ms"])
-            e2el_list.append(res["e2el_ms"])
 
         gpu_monitor.stop()
 
@@ -143,7 +141,6 @@ async def run_single_request_tests(
         ttft_stats = compute_percentile_stats(ttfts)
         itl_stats = compute_percentile_stats(all_itls)
         tpot_stats = compute_percentile_stats(tpot_list)
-        e2el_stats = compute_percentile_stats(e2el_list)
         avg_tps = sum(tps_list) / len(tps_list) if tps_list else 0.0
         peak_vram = gpu_monitor.peak_vram_mb
         peak_vram_abs = gpu_monitor.peak_vram_abs_mb
@@ -158,21 +155,14 @@ async def run_single_request_tests(
                 max_new_tokens=sr_cfg.max_new_tokens,
                 ttft_ms=round(ttft_stats["mean"], 2),
                 median_ttft_ms=round(ttft_stats["median"], 2),
-                p90_ttft_ms=round(ttft_stats["p90"], 2),
                 p99_ttft_ms=round(ttft_stats["p99"], 2),
                 mean_tps=round(avg_tps, 2),
                 mean_itl_ms=round(itl_stats["mean"], 2),
                 median_itl_ms=round(itl_stats["median"], 2),
-                p90_itl_ms=round(itl_stats["p90"], 2),
                 p99_itl_ms=round(itl_stats["p99"], 2),
                 mean_tpot_ms=round(tpot_stats["mean"], 2),
                 median_tpot_ms=round(tpot_stats["median"], 2),
-                p90_tpot_ms=round(tpot_stats["p90"], 2),
                 p99_tpot_ms=round(tpot_stats["p99"], 2),
-                e2el_ms=round(e2el_stats["mean"], 2),
-                median_e2el_ms=round(e2el_stats["median"], 2),
-                p90_e2el_ms=round(e2el_stats["p90"], 2),
-                p99_e2el_ms=round(e2el_stats["p99"], 2),
                 peak_vram_mb=round(peak_vram, 1),
                 peak_vram_abs_mb=round(peak_vram_abs, 1),
                 run_id=run_id,
@@ -180,13 +170,12 @@ async def run_single_request_tests(
             )
         )
         logger.info(
-            "[single] prompt_length=%d => ttft=%.2f ms (p99=%.2f), tps=%.2f, itl=%.2f ms (p99=%.2f), tpot=%.2f ms, e2el=%.2f ms",
+            "[single] prompt_length=%d => ttft=%.2f ms (p99=%.2f), tps=%.2f, itl=%.2f ms (p99=%.2f), tpot=%.2f ms",
             prompt_len,
             ttft_stats["mean"], ttft_stats["p99"],
             avg_tps,
             itl_stats["mean"], itl_stats["p99"],
             tpot_stats["mean"],
-            e2el_stats["mean"],
         )
 
     return results
@@ -244,7 +233,6 @@ async def run_concurrent_tests(
         ttft_stats = compute_percentile_stats(res["all_ttfts_ms"])
         itl_stats = compute_percentile_stats(res["all_itls_ms"])
         tpot_stats = compute_percentile_stats(res["all_tpots_ms"])
-        e2el_stats = compute_percentile_stats(res["all_e2els_ms"])
         avg_tps = res["concurrent_tps"]
         peak_vram = gpu_monitor.peak_vram_mb
         peak_vram_abs = gpu_monitor.peak_vram_abs_mb
@@ -258,21 +246,14 @@ async def run_concurrent_tests(
                 max_new_tokens=cc_cfg.max_new_tokens,
                 ttft_ms=round(ttft_stats["mean"], 2),
                 median_ttft_ms=round(ttft_stats["median"], 2),
-                p90_ttft_ms=round(ttft_stats["p90"], 2),
                 p99_ttft_ms=round(ttft_stats["p99"], 2),
                 mean_tps=round(avg_tps, 2),
                 mean_itl_ms=round(itl_stats["mean"], 2),
                 median_itl_ms=round(itl_stats["median"], 2),
-                p90_itl_ms=round(itl_stats["p90"], 2),
                 p99_itl_ms=round(itl_stats["p99"], 2),
                 mean_tpot_ms=round(tpot_stats["mean"], 2),
                 median_tpot_ms=round(tpot_stats["median"], 2),
-                p90_tpot_ms=round(tpot_stats["p90"], 2),
                 p99_tpot_ms=round(tpot_stats["p99"], 2),
-                e2el_ms=round(e2el_stats["mean"], 2),
-                median_e2el_ms=round(e2el_stats["median"], 2),
-                p90_e2el_ms=round(e2el_stats["p90"], 2),
-                p99_e2el_ms=round(e2el_stats["p99"], 2),
                 peak_vram_mb=round(peak_vram, 1),
                 peak_vram_abs_mb=round(peak_vram_abs, 1),
                 request_rate=rate,
@@ -281,13 +262,12 @@ async def run_concurrent_tests(
             )
         )
         logger.info(
-            "[concurrent] num_requests=%d, rate=%s => ttft=%.2f ms (p99=%.2f), tps=%.2f tok/s, itl=%.2f ms (p99=%.2f), tpot=%.2f ms, e2el=%.2f ms",
+            "[concurrent] num_requests=%d, rate=%s => ttft=%.2f ms (p99=%.2f), tps=%.2f tok/s, itl=%.2f ms (p99=%.2f), tpot=%.2f ms",
             num_requests, rate_label,
             ttft_stats["mean"], ttft_stats["p99"],
             avg_tps,
             itl_stats["mean"], itl_stats["p99"],
             tpot_stats["mean"],
-            e2el_stats["mean"],
         )
 
     return results

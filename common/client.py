@@ -2,7 +2,7 @@
 
 参照 vLLM bench serve 的实现：
 - 所有延迟指标从客户端 time.monotonic() 时间戳计算
-- 逐 SSE chunk 记录时间戳，计算 TTFT / ITL / TPOT / E2EL
+- 逐 SSE chunk 记录时间戳，计算 TTFT / ITL / TPOT
 - 使用 StreamedResponseHandler 正确处理分块 SSE 流
 - 不依赖 /metrics 端点采集延迟/吞吐指标
 - 支持 Poisson 请求调度（request_rate），模拟真实负载场景
@@ -251,7 +251,7 @@ async def concurrent_stream_requests(
     Returns:
         dict with:
             mean_ttft_ms, mean_tpot_ms, mean_itl_ms,
-            all_ttfts_ms, all_itls_ms, all_tpots_ms, all_e2els_ms,
+            all_ttfts_ms, all_itls_ms, all_tpots_ms,
             total_tokens, concurrent_tps, total_time_s, results
     """
     start_time = time.monotonic()
@@ -300,7 +300,6 @@ async def concurrent_stream_requests(
         "all_ttfts_ms": ttfts,
         "all_itls_ms": all_itls,
         "all_tpots_ms": tpots,
-        "all_e2els_ms": [r["e2el_ms"] for r in results],
         "total_tokens": total_tokens,
         "concurrent_tps": concurrent_tps,
         "total_time_s": total_time_s,
